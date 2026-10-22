@@ -11,7 +11,8 @@ public interface IExternalProcess
         string fileName,
         IReadOnlyList<string> arguments,
         string? workingDirectory,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        IReadOnlyDictionary<string, string>? environment = null);
 }
 
 public readonly record struct ProcessResult(int ExitCode, string StandardOutput, string StandardError);
@@ -30,7 +31,8 @@ public sealed class ExternalProcess : IExternalProcess
         string fileName,
         IReadOnlyList<string> arguments,
         string? workingDirectory,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         if (fileName is not ("git" or "gh"))
         {
@@ -59,6 +61,19 @@ public sealed class ExternalProcess : IExternalProcess
         foreach (var argument in arguments)
         {
             start.ArgumentList.Add(argument);
+        }
+
+        if (environment is not null)
+        {
+            foreach (var pair in environment)
+            {
+                if (ContainsToken(pair.Key) || ContainsToken(pair.Value))
+                {
+                    throw new UserFacingException("Token dürfen nicht an git oder gh übergeben werden.");
+                }
+
+                start.Environment[pair.Key] = pair.Value;
+            }
         }
 
         start.Environment["GIT_TERMINAL_PROMPT"] = "0";

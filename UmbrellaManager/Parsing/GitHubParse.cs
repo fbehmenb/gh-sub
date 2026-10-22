@@ -49,6 +49,62 @@ public sealed record GitHubRepo(string Owner, string Name)
 
         return new GitHubRepo(rest[..slash], rest[(slash + 1)..].TrimEnd('/'));
     }
+
+    public static string? Resolve(string? baseUrl, string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return url;
+        }
+
+        var text = url.Trim();
+        if (IsAbsolute(text) || string.IsNullOrWhiteSpace(baseUrl))
+        {
+            return text;
+        }
+
+        var remote = baseUrl.Trim().TrimEnd('/');
+        var useColon = false;
+        while (text.StartsWith("../", StringComparison.Ordinal))
+        {
+            text = text[3..];
+            var slash = remote.LastIndexOf('/');
+            var colon = remote.LastIndexOf(':');
+            if (slash >= 0 && slash > colon)
+            {
+                remote = remote[..slash];
+            }
+            else if (colon >= 0)
+            {
+                remote = remote[..colon];
+                useColon = true;
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        if (text.StartsWith("./", StringComparison.Ordinal))
+        {
+            text = text[2..];
+        }
+
+        if (remote.EndsWith(':'))
+        {
+            return remote + text;
+        }
+
+        return remote + (useColon ? ":" : "/") + text;
+    }
+
+    private static bool IsAbsolute(string url)
+    {
+        return url.Contains("://", StringComparison.Ordinal)
+            || (url.Contains(':')
+                && !url.StartsWith("./", StringComparison.Ordinal)
+                && !url.StartsWith("../", StringComparison.Ordinal));
+    }
 }
 
 public static class GitHubParse

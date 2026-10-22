@@ -39,14 +39,28 @@ public sealed class ShellView : Window
             Width = Dim.Fill(),
             Height = 1,
         };
+        var proposal = new PrProposalPane(controller)
+        {
+            X = 0,
+            Y = Pos.AnchorEnd(8),
+            Width = Dim.Fill(),
+            Height = 7,
+            Visible = false,
+        };
         Add(tabs);
         Add(tree);
         Add(graph);
+        Add(proposal);
         Add(status);
         KeyMap.Attach(this, controller.Execute);
         controller.QuitRequested += () => app.RequestStop();
         controller.Changed += () =>
         {
+            var count = controller.PrProposal?.Count ?? 0;
+            proposal.Visible = count > 0;
+            var height = Math.Clamp(count, 1, 16);
+            proposal.Height = height;
+            proposal.Y = Pos.AnchorEnd(height + 1);
             if (controller.Focus == FocusPane.Graph)
             {
                 if (!graph.HasFocus)

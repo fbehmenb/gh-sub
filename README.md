@@ -12,7 +12,8 @@ Die stabile Terminal.Gui-v2-Linie zielt nur auf `net10.0`. Deshalb ist das Proje
 - `git` im PATH
 - `gh` im PATH und `gh auth status` erfolgreich
 - Windows Terminal (Unicode, TrueColor)
-- Startverzeichnis ist ein Git-Repo mit `.gitmodules`, oder der Pfad wird übergeben
+- Beim ersten Start fragt das Tool nach der GitHub-URL des Umbrella-Repos und nach dem lokalen Ordner. Liegt dort noch kein Clone, wird er angelegt. Die Angaben stehen danach in `%LOCALAPPDATA%\umbrella-manager-local\setup.json` und werden nicht erneut abgefragt.
+- Ein späterer Aufruf mit Pfad nutzt diesen Ordner nur für diesen Start.
 
 ## Start
 
@@ -20,7 +21,7 @@ Die stabile Terminal.Gui-v2-Linie zielt nur auf `net10.0`. Deshalb ist das Proje
 umbrella-manager-local [pfad-zum-umbrella-clone]
 ```
 
-Ohne Argument gilt das aktuelle Verzeichnis.
+Ohne Argument und ohne gespeicherte Einrichtung beginnt die Abfrage. Danach gilt der gespeicherte Ordner.
 
 ## Befehle
 

@@ -14,6 +14,8 @@ public static class KeyMap
         ("A", AppCommand.AddModule),
         ("Delete", AppCommand.RemoveModule),
         ("C", AppCommand.CreatePr),
+        ("J", AppCommand.ConfirmPush),
+        ("N", AppCommand.CancelPush),
         ("R", AppCommand.Reload),
         ("Q", AppCommand.Quit),
     ];
@@ -83,6 +85,16 @@ public static class KeyMap
         if (key == Terminal.Gui.Input.Key.C)
         {
             return AppCommand.CreatePr;
+        }
+
+        if (key == Terminal.Gui.Input.Key.J)
+        {
+            return AppCommand.ConfirmPush;
+        }
+
+        if (key == Terminal.Gui.Input.Key.N)
+        {
+            return AppCommand.CancelPush;
         }
 
         if (key == Terminal.Gui.Input.Key.R)

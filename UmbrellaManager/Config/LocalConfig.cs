@@ -2,11 +2,13 @@ using System.Text.Json;
 
 namespace UmbrellaManager.Config;
 
-public sealed record LocalConfig(string HiddenBranchPattern)
+public sealed record LocalConfig(string HiddenBranchPattern, string PinTitle)
 {
     public const string FileName = "umbrella-manager.local.json";
 
-    public static LocalConfig Default { get; } = new("chore/pin-*");
+    public const string DefaultPinTitle = "chore(<modul>): pin auf <sha7> (<modul-branch>)";
+
+    public static LocalConfig Default { get; } = new("chore/pin-*", DefaultPinTitle);
 
     public static (LocalConfig Config, string? Warning) Load(string umbrellaPath, string baseDirectory, string workingDirectory)
     {
@@ -26,14 +28,9 @@ public sealed record LocalConfig(string HiddenBranchPattern)
             try
             {
                 using var document = JsonDocument.Parse(File.ReadAllText(path));
-                if (document.RootElement.TryGetProperty("hiddenBranchPattern", out var value)
-                    && value.ValueKind == JsonValueKind.String
-                    && value.GetString() is { Length: > 0 } pattern)
-                {
-                    return (new LocalConfig(pattern), null);
-                }
-
-                return (Default, null);
+                var pattern = ReadString(document.RootElement, "hiddenBranchPattern") ?? Default.HiddenBranchPattern;
+                var title = ReadString(document.RootElement, "pinTitle") ?? Default.PinTitle;
+                return (new LocalConfig(pattern, title), null);
             }
             catch (JsonException)
             {
@@ -42,5 +39,17 @@ public sealed record LocalConfig(string HiddenBranchPattern)
         }
 
         return (Default, null);
+    }
+
+    private static string? ReadString(JsonElement root, string name)
+    {
+        if (root.TryGetProperty(name, out var value)
+            && value.ValueKind == JsonValueKind.String
+            && value.GetString() is { Length: > 0 } text)
+        {
+            return text;
+        }
+
+        return null;
     }
 }

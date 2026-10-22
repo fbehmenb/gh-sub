@@ -15,9 +15,37 @@ public static class AppHost
         Console.OutputEncoding = Encoding.UTF8;
         try
         {
-            var path = args.Length > 0 ? Path.GetFullPath(args[0]) : Directory.GetCurrentDirectory();
             var process = new ExternalProcess();
-            var problem = await StartupCheck.FindProblemAsync(process, path, Directory.Exists, File.Exists).ConfigureAwait(false);
+            var tools = await StartupCheck.FindToolProblemAsync(process).ConfigureAwait(false);
+            if (tools is not null)
+            {
+                Console.Error.WriteLine(tools);
+                return 1;
+            }
+
+            var saved = UserSetup.Load(UserSetup.DefaultFilePath, out _);
+            var savedReady = saved is not null && Directory.Exists(saved.LocalPath);
+            var suggested = args.Length > 0 ? Path.GetFullPath(args[0]) : null;
+            var path = await FirstRun.EnsureAsync(
+                UserSetup.DefaultFilePath,
+                suggested,
+                Console.In,
+                Console.Out,
+                process,
+                Directory.Exists,
+                File.Exists,
+                static directory => Directory.EnumerateFileSystemEntries(directory).Any()).ConfigureAwait(false);
+            if (path is null)
+            {
+                return 1;
+            }
+
+            if (savedReady && suggested is not null)
+            {
+                path = suggested;
+            }
+
+            var problem = await StartupCheck.FindProblemAsync(process, path, Directory.Exists).ConfigureAwait(false);
             if (problem is not null)
             {
                 Console.Error.WriteLine(problem);
@@ -31,6 +59,7 @@ public static class AppHost
             }
 
             var source = new UmbrellaSource(process, new ResponseCache(), path);
+            Console.WriteLine("Hole Branches …");
             var branches = await source.LoadBranchesAsync(config.HiddenBranchPattern, CancellationToken.None).ConfigureAwait(false);
             if (branches.Count == 0)
             {
@@ -38,7 +67,7 @@ public static class AppHost
                 return 1;
             }
 
-            var controller = new SessionController(source, branches, config.HiddenBranchPattern);
+            var controller = new SessionController(source, branches, config.HiddenBranchPattern, config.PinTitle);
             await controller.LoadCurrentAsync().ConfigureAwait(false);
             IApplication app = Application.Create();
             app.Init();

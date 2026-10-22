@@ -19,12 +19,12 @@ Abweichung vom ursprünglichen Rahmen .NET 8: die stabile Terminal.Gui-v2-Linie 
 - .NET 10, Terminal.Gui v2, gepinnt auf 2.5.0.
 - `dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true` liefert eine EXE.
 - Start: `umbrella-manager-local [pfad-zum-umbrella-clone]`, Default = aktuelles Verzeichnis.
-- Voraussetzungen beim Start prüfen und klar melden: `git` im PATH, `gh` im PATH, `gh auth status` ok, Verzeichnis ist ein Git-Repo mit `.gitmodules`.
+- Voraussetzungen beim Start prüfen und klar melden: `git` im PATH, `gh` im PATH, `gh auth status` ok, Verzeichnis ist ein Git-Repo. `.gitmodules` muss nicht auf dem ausgecheckten Branch liegen.
 - Läuft in Windows Terminal (Unicode, TrueColor). Kein Fallback für alte conhost.
 
 ## Oberfläche
 
-1. **Tabs oben:** ein Tab je Branch des Umbrella-Repos (`git ls-remote --heads origin`). Reihenfolge: `dev/*`, `staging/*`, `production/*`, danach alle übrigen alphabetisch. Annahme: Branches mit dem Muster `chore/pin-*` (die vom Tool selbst angelegten PR-Branches) werden standardmäßig ausgeblendet, Muster konfigurierbar.
+1. **Tabs oben:** ein Tab je Branch des Umbrella-Repos, der eine `.gitmodules` enthält (`git fetch` aller Heads, danach `git cat-file -e origin/<branch>:.gitmodules`). Reihenfolge: `dev/*`, `staging/*`, `production/*`, danach alle übrigen alphabetisch. Annahme: Branches mit dem Muster `chore/pin-*` (die vom Tool selbst angelegten PR-Branches) werden standardmäßig ausgeblendet, Muster konfigurierbar.
 2. **Links: Submodul-Struktur** des gewählten Tab-Branches. Quelle: `.gitmodules` plus `git ls-tree -r <branch>` (Einträge mit Mode 160000). Ordner werden als aufklappbare Knoten gezeigt, Submodule rutschen darunter ein (z. B. `gb_modules/` mit den `gb_*`-Modulen, daneben `ratocon_modules`). Nur Struktur, keine Dateien.
 3. **Rechts: Commit-Graph** des gewählten Submoduls, live von GitHub:
    - Spur 0 = Standard-Branch des Moduls (`branch =` aus `.gitmodules`, sonst Default-Branch des Repos, z. B. `19.0`), weitere Spuren = andere Branches, auf die ein Pin zeigt oder die jünger sind (Partner-Feature-Branches).

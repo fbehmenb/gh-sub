@@ -63,6 +63,14 @@ public class ReadingTests
         Assert.Equal(Pin, roots[0].Children[0].Sha);
         Assert.Equal("19.0", roots[0].Children[0].Branch);
         Assert.Equal("Gahrens-Battermann-GmbH-Co-KG", GitHubRepo.FromUrl(roots[0].Children[1].Url)!.Owner);
+        var relative = GitHubRepo.Resolve(
+            "https://github.com/Gahrens-Battermann-GmbH-Co-KG/odoo_umbrella.git",
+            "../gb_activity_actions.git");
+        Assert.Equal("https://github.com/Gahrens-Battermann-GmbH-Co-KG/gb_activity_actions.git", relative);
+        Assert.Equal("gb_activity_actions", GitHubRepo.FromUrl(relative)!.Name);
+        Assert.Equal(
+            "git@github.com:Gahrens-Battermann-GmbH-Co-KG/gb_activity_actions.git",
+            GitHubRepo.Resolve("git@github.com:Gahrens-Battermann-GmbH-Co-KG/odoo_umbrella.git", "../gb_activity_actions.git"));
 
         var collapsed = new HashSet<string>(StringComparer.Ordinal) { "gb_modules" };
         var rows = SubmoduleTree.Flatten(roots, collapsed);
@@ -128,7 +136,7 @@ public class ReadingTests
         var keys = KeyMap.Bindings.Select(binding => binding.Key).ToArray();
         Assert.Equal(keys.Length, keys.Distinct().Count());
         Assert.Equal(
-            ["Left", "Right", "Tab", "Up", "Down", "Space", "Enter", "A", "Delete", "C", "R", "Q"],
+            ["Left", "Right", "Tab", "Up", "Down", "Space", "Enter", "A", "Delete", "C", "J", "N", "R", "Q"],
             keys);
         Assert.Equal(keys.Length, KeyMap.Bindings.Select(binding => binding.Command).Distinct().Count());
     }

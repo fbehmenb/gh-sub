@@ -10,6 +10,8 @@ public sealed class UmbrellaSource
     private readonly IExternalProcess _process;
     private readonly ResponseCache _cache;
     private readonly string _path;
+    private string? _origin;
+    private bool _originLoaded;
 
     public UmbrellaSource(IExternalProcess process, ResponseCache cache, string path)
     {
@@ -26,9 +28,35 @@ public sealed class UmbrellaSource
         Offline = false;
     }
 
+    public Task<IReadOnlyList<PinResult>> PublishPinsAsync(
+        string tab,
+        string loadedTip,
+        IReadOnlyList<PinChange> changes,
+        string titleTemplate,
+        CancellationToken cancellationToken)
+    {
+        return new PinPublisher(_process, _path).PublishAsync(tab, loadedTip, changes, titleTemplate, cancellationToken);
+    }
+
+    public async Task<string?> ReadTipAsync(string branch, CancellationToken cancellationToken)
+    {
+        var tip = await _process.RunAsync("git", ["rev-parse", "origin/" + branch], _path, cancellationToken).ConfigureAwait(false);
+        if (tip.ExitCode != 0)
+        {
+            return null;
+        }
+
+        var sha = tip.StandardOutput.Trim();
+        return sha.Length == 40 ? sha : null;
+    }
+
     public async Task<IReadOnlyList<string>> LoadBranchesAsync(string hidePattern, CancellationToken cancellationToken)
     {
-        var fetch = await _process.RunAsync("git", ["fetch", "origin"], _path, cancellationToken).ConfigureAwait(false);
+        var fetch = await _process.RunAsync(
+            "git",
+            ["fetch", "origin", "+refs/heads/*:refs/remotes/origin/*"],
+            _path,
+            cancellationToken).ConfigureAwait(false);
         var remote = await _process.RunAsync("git", ["ls-remote", "--heads", "origin"], _path, cancellationToken).ConfigureAwait(false);
         if (remote.ExitCode == 0)
         {
@@ -37,7 +65,8 @@ public sealed class UmbrellaSource
                 Offline = true;
             }
 
-            return BranchOrder.Apply(BranchOrder.ParseRemoteHeads(remote.StandardOutput), hidePattern);
+            return await WithGitmodulesAsync(BranchOrder.Apply(BranchOrder.ParseRemoteHeads(remote.StandardOutput), hidePattern), cancellationToken)
+                .ConfigureAwait(false);
         }
 
         var local = await _process.RunAsync("git", ["branch", "-r", "--format=%(refname:short)"], _path, cancellationToken).ConfigureAwait(false);
@@ -47,7 +76,37 @@ public sealed class UmbrellaSource
         }
 
         Offline = true;
-        return BranchOrder.Apply(BranchOrder.ParseLocalRemoteBranches(local.StandardOutput), hidePattern);
+        return await WithGitmodulesAsync(BranchOrder.Apply(BranchOrder.ParseLocalRemoteBranches(local.StandardOutput), hidePattern), cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<IReadOnlyList<string>> WithGitmodulesAsync(IReadOnlyList<string> branches, CancellationToken cancellationToken)
+    {
+        if (branches.Count == 0)
+        {
+            return branches;
+        }
+
+        var kept = new List<string>();
+        foreach (var branch in branches)
+        {
+            var probe = await _process.RunAsync(
+                "git",
+                ["cat-file", "-e", "origin/" + branch + ":.gitmodules"],
+                _path,
+                cancellationToken).ConfigureAwait(false);
+            if (probe.ExitCode == 0)
+            {
+                kept.Add(branch);
+            }
+        }
+
+        if (kept.Count == 0)
+        {
+            throw new UserFacingException("Kein Branch enthält eine .gitmodules.");
+        }
+
+        return kept;
     }
 
     public async Task<IReadOnlyList<TreeNode>> LoadTreeAsync(string branch, CancellationToken cancellationToken)
@@ -69,10 +128,27 @@ public sealed class UmbrellaSource
         }
 
         var gitmodules = modules.ExitCode == 0 ? modules.StandardOutput : "";
-        return SubmoduleTree.Build(SubmoduleTree.Merge(gitmodules, tree.StandardOutput));
+        var origin = await OriginUrlAsync(cancellationToken).ConfigureAwait(false);
+        var entries = SubmoduleTree.Merge(gitmodules, tree.StandardOutput)
+            .Select(entry => entry with { Url = GitHubRepo.Resolve(origin, entry.Url) })
+            .ToList();
+        return SubmoduleTree.Build(entries);
     }
 
-    public async Task<GraphSnapshot> LoadGraphAsync(SubmoduleEntry module, CancellationToken cancellationToken)
+    private async Task<string?> OriginUrlAsync(CancellationToken cancellationToken)
+    {
+        if (_originLoaded)
+        {
+            return _origin;
+        }
+
+        _originLoaded = true;
+        var remote = await _process.RunAsync("git", ["remote", "get-url", "origin"], _path, cancellationToken).ConfigureAwait(false);
+        _origin = remote.ExitCode == 0 ? remote.StandardOutput.Trim() : null;
+        return _origin;
+    }
+
+    public async Task<GraphSnapshot> LoadGraphAsync(SubmoduleEntry module, CancellationToken cancellationToken, string? pendingSha = null)
     {
         var repo = GitHubRepo.FromUrl(module.Url);
         if (repo is null)
@@ -136,7 +212,7 @@ public sealed class UmbrellaSource
 
         var lanes = new List<string> { standardName };
         lanes.AddRange(extra.Select(lane => lane.Name));
-        var rows = GraphBuilder.Build(standardName, standardCommits, extraCommits, module.Sha, pendingSha: null);
+        var rows = GraphBuilder.Build(standardName, standardCommits, extraCommits, module.Sha, pendingSha);
         var message = extra.Count == GraphBuilder.MaxExtraLanes ? "Weitere Branches sind nicht als Spuren gezeigt." : "";
         return new GraphSnapshot(lanes, rows, message);
     }

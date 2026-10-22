@@ -1,5 +1,6 @@
 namespace UmbrellaManager;
 
+using UmbrellaManager.Config;
 using UmbrellaManager.Model;
 using UmbrellaManager.Parsing;
 using UmbrellaManager.Process;
@@ -17,6 +18,8 @@ public enum AppCommand
     AddModule,
     RemoveModule,
     CreatePr,
+    ConfirmPush,
+    CancelPush,
     Reload,
     Quit,
 }
@@ -33,13 +36,20 @@ public sealed class SessionController
     private readonly string _pattern;
     private readonly HashSet<string> _collapsed = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SubmoduleEntry> _modules = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, string>> _pending = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _tips = new(StringComparer.Ordinal);
+    private readonly string _pinTitle;
     private CancellationTokenSource _cancel = new();
     private int _epoch;
+    private bool _confirming;
+    private bool _publishing;
+    private bool _resultVisible;
 
-    public SessionController(UmbrellaSource source, IReadOnlyList<string> branches, string pattern)
+    public SessionController(UmbrellaSource source, IReadOnlyList<string> branches, string pattern, string? pinTitle = null)
     {
         _source = source;
         _pattern = pattern;
+        _pinTitle = string.IsNullOrWhiteSpace(pinTitle) ? LocalConfig.DefaultPinTitle : pinTitle;
         Branches = branches;
     }
 
@@ -73,6 +83,8 @@ public sealed class SessionController
 
     public string Message { get; private set; } = "keine vorgemerkten Änderungen";
 
+    public IReadOnlyList<string>? PrProposal { get; private set; }
+
     public IReadOnlyDictionary<string, string> PinMarks { get; private set; } = new Dictionary<string, string>();
 
     public IReadOnlyList<VisibleRow> Rows => SubmoduleTree.Flatten(Roots, _collapsed);
@@ -88,6 +100,27 @@ public sealed class SessionController
 
     public void Execute(AppCommand command)
     {
+        if (_publishing && command != AppCommand.Quit)
+        {
+            return;
+        }
+
+        if (_resultVisible && command != AppCommand.Quit)
+        {
+            _resultVisible = false;
+            PrProposal = null;
+            if (command is AppCommand.ConfirmPush or AppCommand.CancelPush)
+            {
+                Raise();
+                return;
+            }
+        }
+
+        if (_confirming && command is not (AppCommand.ConfirmPush or AppCommand.CancelPush or AppCommand.Quit))
+        {
+            return;
+        }
+
         switch (command)
         {
             case AppCommand.PreviousBranch:
@@ -110,7 +143,7 @@ public sealed class SessionController
                 ToggleFolder();
                 break;
             case AppCommand.StagePin:
-                Say(IsProduction ? "Production ist schreibgeschützt." : "Pin vormerken folgt in der nächsten Phase.");
+                StagePin();
                 break;
             case AppCommand.AddModule:
                 Say(IsProduction ? "Production ist schreibgeschützt." : "Hinzufügen folgt in der nächsten Phase.");
@@ -119,7 +152,29 @@ public sealed class SessionController
                 Say(IsProduction ? "Production ist schreibgeschützt." : "Entfernen folgt in der nächsten Phase.");
                 break;
             case AppCommand.CreatePr:
-                Say(IsProduction ? "Promotion-PR folgt in der nächsten Phase." : "Pull Requests folgen in der nächsten Phase.");
+                if (IsProduction)
+                {
+                    Say("Promotion-PR folgt in der nächsten Phase.");
+                    break;
+                }
+
+                AskPush();
+                break;
+            case AppCommand.ConfirmPush:
+                if (_confirming)
+                {
+                    _ = PublishAsync();
+                }
+
+                break;
+            case AppCommand.CancelPush:
+                if (_confirming)
+                {
+                    _confirming = false;
+                    PrProposal = null;
+                    Say("Push abgebrochen. " + Status(Branch));
+                }
+
                 break;
             case AppCommand.Reload:
                 _ = ReloadAsync();
@@ -242,7 +297,7 @@ public sealed class SessionController
                 Lanes = [];
                 GraphMessage = selected?.IsFolder == true ? "Ordner, kein Submodul." : "Lade Commits …";
                 PinMarks = new Dictionary<string, string>();
-                Message = _source.Offline ? GitHub.GitHubText.Offline : "keine vorgemerkten Änderungen";
+                Message = Status(branch);
                 Raise();
             });
 
@@ -262,13 +317,20 @@ public sealed class SessionController
                     }
 
                     PinMarks = marks;
-                    if (_source.Offline)
-                    {
-                        Message = GitHub.GitHubText.Offline;
-                    }
-
+                    Message = Status(branch);
                     Raise();
                 });
+            }
+
+            var tip = await _source.ReadTipAsync(branch, token).ConfigureAwait(false);
+            if (epoch != _epoch)
+            {
+                return;
+            }
+
+            if (tip is not null)
+            {
+                _tips[branch] = tip;
             }
 
             if (module is null)
@@ -276,7 +338,7 @@ public sealed class SessionController
                 return;
             }
 
-            var snapshot = await _source.LoadGraphAsync(module, token).ConfigureAwait(false);
+            var snapshot = await _source.LoadGraphAsync(module, token, PendingSha(branch, module.Path)).ConfigureAwait(false);
             if (epoch != _epoch)
             {
                 return;
@@ -293,11 +355,7 @@ public sealed class SessionController
                 Graph = snapshot.Rows;
                 GraphIndex = PinRow(snapshot.Rows, module.Sha);
                 GraphMessage = snapshot.Message;
-                if (_source.Offline)
-                {
-                    Message = GitHub.GitHubText.Offline;
-                }
-
+                Message = Status(branch);
                 Raise();
             });
         }
@@ -355,7 +413,7 @@ public sealed class SessionController
 
         try
         {
-            var snapshot = await _source.LoadGraphAsync(module, token).ConfigureAwait(false);
+            var snapshot = await _source.LoadGraphAsync(module, token, Branch is null ? null : PendingSha(Branch, path)).ConfigureAwait(false);
             if (epoch != _epoch)
             {
                 return;
@@ -372,11 +430,7 @@ public sealed class SessionController
                 Graph = snapshot.Rows;
                 GraphIndex = PinRow(snapshot.Rows, module.Sha);
                 GraphMessage = snapshot.Message;
-                if (_source.Offline)
-                {
-                    Message = GitHub.GitHubText.Offline;
-                }
-
+                Message = Status(Branch);
                 Raise();
             });
         }
@@ -387,6 +441,204 @@ public sealed class SessionController
         {
             Fail(epoch, ex.Message);
         }
+    }
+
+    private void AskPush()
+    {
+        var changes = CurrentChanges();
+        if (changes.Count == 0)
+        {
+            Say("Nichts vorgemerkt.");
+            return;
+        }
+
+        if (Branch is null || !_tips.TryGetValue(Branch, out _))
+        {
+            Say("Der Stand des Branches ist unbekannt. Bitte mit r neu laden.");
+            return;
+        }
+
+        _confirming = true;
+        PrProposal = PinPublisher.Question(Branch, changes, _pinTitle);
+        Say("Wirklich folgende Änderungen als Pull Request pushen? j ja, n nein");
+    }
+
+    private async Task PublishAsync()
+    {
+        var branch = Branch;
+        if (branch is null || !_tips.TryGetValue(branch, out var tip))
+        {
+            _confirming = false;
+            PrProposal = null;
+            Say("Der Stand des Branches ist unbekannt. Bitte mit r neu laden.");
+            return;
+        }
+
+        var changes = CurrentChanges();
+        _confirming = false;
+        _publishing = true;
+        PrProposal = ["Lege Pull Requests an …"];
+        Say("Lege Pull Requests an …");
+        var epoch = _epoch;
+        var token = Restart();
+        try
+        {
+            var results = await _source.PublishPinsAsync(branch, tip, changes, _pinTitle, token).ConfigureAwait(false);
+            if (epoch != _epoch)
+            {
+                Post(() => { _publishing = false; });
+                return;
+            }
+
+            Post(() =>
+            {
+                if (epoch != _epoch)
+                {
+                    return;
+                }
+
+                if (_pending.TryGetValue(branch, out var map))
+                {
+                    foreach (var result in results.Where(result => result.Created))
+                    {
+                        map.Remove(result.Path);
+                    }
+                }
+
+                if (Selected is { IsFolder: false } row && _modules.TryGetValue(row.Path, out var module))
+                {
+                    var pending = PendingSha(branch, row.Path);
+                    Graph = Graph.Select(commit => commit with { Tone = GraphBuilder.Tone(commit.Sha, module.Sha, pending) }).ToList();
+                }
+
+                _publishing = false;
+                _resultVisible = true;
+                PrProposal = results.Select(result => result.Text).ToList();
+                Message = Status(branch);
+                Raise();
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            Post(() =>
+            {
+                _publishing = false;
+                PrProposal = null;
+                Raise();
+            });
+        }
+        catch (UserFacingException ex)
+        {
+            var message = ex.Message;
+            Post(() =>
+            {
+                if (epoch != _epoch)
+                {
+                    return;
+                }
+
+                _publishing = false;
+                PrProposal = null;
+                Message = message;
+                GraphMessage = message;
+                Raise();
+            });
+        }
+    }
+
+    private List<PinChange> CurrentChanges()
+    {
+        var changes = new List<PinChange>();
+        if (Branch is null || !_pending.TryGetValue(Branch, out var map))
+        {
+            return changes;
+        }
+
+        foreach (var pair in map.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            _modules.TryGetValue(pair.Key, out var module);
+            changes.Add(new PinChange(pair.Key, PinPublisher.ModuleName(pair.Key), module?.Sha, pair.Value, module?.Branch, module?.Url));
+        }
+
+        return changes;
+    }
+
+    private void StagePin()
+    {
+        if (IsProduction)
+        {
+            Say("Production ist schreibgeschützt.");
+            return;
+        }
+
+        if (Branch is null || Focus != FocusPane.Graph || GraphIndex < 0 || GraphIndex >= Graph.Count)
+        {
+            Say("Commit im Graph wählen.");
+            return;
+        }
+
+        if (Selected is not { IsFolder: false } row || !_modules.TryGetValue(row.Path, out var module))
+        {
+            Say("Ordner, kein Submodul.");
+            return;
+        }
+
+        var chosen = Graph[GraphIndex].Sha;
+        var map = PendingMap(Branch);
+        if (Sha.Same(chosen, module.Sha))
+        {
+            map.Remove(row.Path);
+        }
+        else
+        {
+            map[row.Path] = chosen;
+        }
+
+        var pending = map.TryGetValue(row.Path, out var staged) ? staged : null;
+        Graph = Graph.Select(commit => commit with { Tone = GraphBuilder.Tone(commit.Sha, module.Sha, pending) }).ToList();
+        Say(Status(Branch));
+    }
+
+    private Dictionary<string, string> PendingMap(string branch)
+    {
+        if (!_pending.TryGetValue(branch, out var map))
+        {
+            map = new Dictionary<string, string>(StringComparer.Ordinal);
+            _pending[branch] = map;
+        }
+
+        return map;
+    }
+
+    private string? PendingSha(string branch, string path)
+    {
+        return _pending.TryGetValue(branch, out var map) && map.TryGetValue(path, out var sha) ? sha : null;
+    }
+
+    private string Status(string? branch)
+    {
+        var summary = "keine vorgemerkten Änderungen";
+        if (branch is not null && _pending.TryGetValue(branch, out var map) && map.Count > 0)
+        {
+            summary = "vorgemerkt: " + string.Join(", ", map
+                .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => ModuleName(pair.Key) + " " + Sha.Short(pair.Value)));
+        }
+
+        if (!_source.Offline)
+        {
+            return summary;
+        }
+
+        return summary == "keine vorgemerkten Änderungen"
+            ? GitHub.GitHubText.Offline
+            : GitHub.GitHubText.Offline + " · " + summary;
+    }
+
+    private static string ModuleName(string path)
+    {
+        var slash = path.LastIndexOf('/');
+        return slash < 0 ? path : path[(slash + 1)..];
     }
 
     private void ToggleFolder()
