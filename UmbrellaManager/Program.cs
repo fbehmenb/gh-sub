@@ -1,1 +1,1 @@
-﻿return 0;
+﻿return await UmbrellaManager.AppHost.RunAsync(args);
