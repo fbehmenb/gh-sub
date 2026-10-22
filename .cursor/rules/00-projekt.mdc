@@ -1,0 +1,14 @@
+---
+description: Grenzen und Sicherheitsnetz für Pins, PRs und Prozessaufrufe
+alwaysApply: true
+---
+
+# Grenzen
+
+- Production-Tabs (`production/*`) sind schreibgeschützt. Pin, Hinzufügen und Entfernen sind dort gesperrt. `c` legt nur den Promotion-PR von `staging/*` nach `production/*` an, Titel `chore: staging nach production`.
+- Vor dem Promotion-PR je Submodul prüfen, dass der Pin auf dem Standard-Branch liegt (`behind` oder `identical`). Bei Verstoß abbrechen und die Module nennen.
+- Nie direkt auf Tab-Branches pushen. Immer Arbeitsbranch und Pull Request.
+- Ein PR je Tab und je Modul. Mehrere vorgemerkte Pins im selben Tab ergeben mehrere PRs.
+- Kein Force-Push, kein Löschen von Branches, keine Änderungen an Rulesets.
+- Den Working Tree des Umbrella-Clones nicht verändern. Index-Änderungen nur über `GIT_INDEX_FILE` auf einer temporären Datei.
+- `git` und `gh` nur über die eine Prozessklasse. Tokens nie loggen.

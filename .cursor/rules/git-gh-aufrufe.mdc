@@ -1,0 +1,16 @@
+---
+description: git und gh nur über eine Klasse, Argumentlisten, keine Tokens in Logs
+globs: "**/*.cs"
+alwaysApply: false
+---
+
+# git- und gh-Aufrufe
+
+Alle `git`- und `gh`-Aufrufe laufen über eine einzige Klasse. Argumente als Liste, nicht als Shell-String. Ausgaben über `--json` oder `-q` parsen. Tokens, `GH_TOKEN` und `Authorization`-Header nie loggen.
+
+```csharp
+// Argumente als Liste
+await git.RunAsync("rev-parse", "--verify", "origin/dev/19.0");
+```
+
+Kein Shell-String, der Variablen interpoliert (`cmd.exe /c git ... && gh ...`).

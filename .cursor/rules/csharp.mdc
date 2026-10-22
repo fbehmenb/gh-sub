@@ -1,0 +1,19 @@
+---
+description: C#-Konventionen für Nullable, async und Views
+globs: "**/*.cs"
+alwaysApply: false
+---
+
+# C#
+
+- Nullable ist an. Öffentliche APIs geben ohne `null` zurück, sonst `T?`, und der Aufrufer prüft.
+- Async-Methoden geben `Task` oder `Task<T>` zurück. Kein `async void`, außer dem vom Framework erzwungenen Ereignis. Ausnahmen nicht schlucken, sondern nach oben durchreichen.
+- Keine statischen Zustände in Views. Zustand liegt im Modell, die View liest ihn.
+
+```csharp
+// Zustand im Modell, nicht in der View
+sealed class PinBoard
+{
+    public string? PendingSha { get; set; }
+}
+```

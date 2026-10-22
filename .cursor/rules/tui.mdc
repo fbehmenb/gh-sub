@@ -1,0 +1,13 @@
+---
+description: Terminal.Gui-Views und zentrale Tastaturbelegung
+globs: "**/Views/**"
+alwaysApply: false
+---
+
+# Views
+
+- Terminal.Gui v2, Version aus der PackageReference, nicht gleitend.
+- Eine View zeigt Zustand. Sie speichert ihn nicht statisch und ruft `git` oder `gh` nicht selbst auf.
+- Tasten liegen in einer zentralen Belegung. Views registrieren keine eigenen Handler für `a`, `c`, `r`, `q`, Enter, Entf oder Pfeile.
+
+Belegung: `←`/`→` Tab, `Tab` Fokus, `↑`/`↓` Navigation, Leertaste Ordner, Enter Pin, `a` hinzufügen, Entf entfernen, `c` PR, `r` neu laden, `q` beenden.
