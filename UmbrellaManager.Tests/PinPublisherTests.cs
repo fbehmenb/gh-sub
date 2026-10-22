@@ -7,7 +7,31 @@ namespace UmbrellaManager.Tests;
 public class PinPublisherTests
 {
     [Fact]
-    public async Task Stale_branch_is_not_pushed()
+    public void Release_title_uses_manifest_version_and_stage()
+    {
+        var change = new PinChange(
+            "gb_modules/gb_documents_archive",
+            "gb_documents_archive",
+            null,
+            "8847dd1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "19.0",
+            "https://github.com/Org/gb_documents_archive",
+            "19.0.1.8.14");
+
+        Assert.Equal("dev", PinPublisher.Stage("dev/19.0"));
+        Assert.Equal("staging", PinPublisher.Stage("19.0-staging"));
+        Assert.Equal(
+            "[REL] gb_documents_archive: 19.0.1.8.14",
+            PinPublisher.Title(LocalConfig.DefaultPinTitle, change, "dev/19.0"));
+        Assert.Equal(
+            "[REL] gb_documents_archive: 8847dd1",
+            PinPublisher.Title(LocalConfig.DefaultPinTitle, change with { Version = null }, "staging/19.0"));
+        Assert.Contains("Quelle: staging/19.0", PinPublisher.Body(change, "production/19.0"));
+        Assert.DoesNotContain("Quelle:", PinPublisher.Body(change, "dev/19.0"));
+    }
+
+    [Fact]
+    public async Task Moved_gitlink_is_not_pushed()
     {
         var calls = new List<IReadOnlyList<string>>();
         var process = new TipProcess((file, args) =>
@@ -15,21 +39,95 @@ public class PinPublisherTests
             calls.Add(args);
             if (args.Contains("rev-parse"))
             {
+                var spec = args[^1];
+                if (spec.Contains(':'))
+                {
+                    return spec.StartsWith("aaaaaaaa", StringComparison.Ordinal)
+                        ? new ProcessResult(0, "1111111111111111111111111111111111111111\n", "")
+                        : new ProcessResult(0, "9999999999999999999999999999999999999999\n", "");
+                }
+
                 return new ProcessResult(0, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n", "");
             }
 
             return new ProcessResult(0, "", "");
         });
 
-        var exception = await Assert.ThrowsAsync<UserFacingException>(() => new PinPublisher(process, "C:\\repo").PublishAsync(
+        var ticks = new List<PushTick>();
+        var results = await new PinPublisher(process, "C:\\repo").PublishAsync(
             "dev/19.0",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             [new PinChange("gb_a", "gb_a", "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222", "19.0", null)],
             LocalConfig.DefaultPinTitle,
-            CancellationToken.None));
+            CancellationToken.None,
+            ticks.Add);
 
-        Assert.Contains("weitergelaufen", exception.Message);
+        Assert.Equal(2, ticks.Count);
+        Assert.False(ticks[0].Finished);
+        Assert.Contains("wird gepusht", ticks[0].Text);
+        Assert.True(ticks[1].Finished);
+        Assert.Contains("Konflikt", ticks[1].Text);
+        Assert.Contains("Konflikt", results[0].Text);
+        Assert.True(results[0].Conflict);
+        Assert.False(results[0].Created);
         Assert.DoesNotContain(calls, args => args.Contains("push"));
+    }
+
+    [Fact]
+    public async Task Moved_tip_with_the_same_gitlink_parents_on_the_new_tip()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "umbrella-manager-pr-" + Guid.NewGuid().ToString("N"));
+        var bare = Path.Combine(root, "origin.git");
+        var work = Path.Combine(root, "umbrella");
+        var git = new GitWithFakeGh();
+        try
+        {
+            Directory.CreateDirectory(root);
+            await Git(git, root, "init", "--bare", bare);
+            await Git(git, root, "init", "-b", "dev/19.0", work);
+            await File.WriteAllTextAsync(Path.Combine(work, "README"), "x");
+            await Git(git, work, "add", "README");
+            await Git(git, work, "commit", "-m", "init");
+            const string oldSha = "1111111111111111111111111111111111111111";
+            const string newA = "2222222222222222222222222222222222222222";
+            await Git(git, work, "update-index", "--add", "--cacheinfo", "160000," + oldSha + ",gb_a");
+            await Git(git, work, "commit", "-m", "links");
+            await Git(git, work, "remote", "add", "origin", bare);
+            await Git(git, work, "push", "origin", "dev/19.0");
+            var loaded = (await Git(git, work, "rev-parse", "HEAD")).StandardOutput.Trim();
+            await File.WriteAllTextAsync(Path.Combine(work, "README"), "y");
+            await Git(git, work, "add", "README");
+            await Git(git, work, "commit", "-m", "readme");
+            await Git(git, work, "push", "origin", "dev/19.0");
+            var tip = (await Git(git, work, "rev-parse", "HEAD")).StandardOutput.Trim();
+            var before = (await Git(git, work, "status", "--porcelain")).StandardOutput;
+
+            var results = await new PinPublisher(git, work).PublishAsync(
+                "dev/19.0",
+                loaded,
+                [new PinChange("gb_a", "gb_a", oldSha, newA, "19.0", "https://github.com/Org/gb_a.git")],
+                LocalConfig.DefaultPinTitle,
+                CancellationToken.None);
+
+            Assert.True(results[0].Created);
+            Assert.Equal(before, (await Git(git, work, "status", "--porcelain")).StandardOutput);
+            var head = RemoteHead(await Git(git, work, "ls-remote", "origin", "refs/heads/chore/pin-gb_a-" + newA[..7] + "-dev/19.0"));
+            var parent = (await Git(git, work, "rev-parse", head + "^")).StandardOutput.Trim();
+            Assert.Equal(tip, parent);
+            Assert.DoesNotContain(git.Calls, args => args.Contains("--force") || args.Contains("-f"));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+                {
+                    File.SetAttributes(file, FileAttributes.Normal);
+                }
+
+                Directory.Delete(root, recursive: true);
+            }
+        }
     }
 
     [Fact]
@@ -75,6 +173,8 @@ public class PinPublisherTests
             Assert.All(pulls, args => Assert.Contains("dev/19.0", args));
             Assert.Contains(pulls, args => args.Any(argument => argument.Contains("chore/pin-gb_a-", StringComparison.Ordinal)));
             Assert.Contains(pulls, args => args.Any(argument => argument.Contains("chore/pin-gb_b-", StringComparison.Ordinal)));
+            Assert.Contains(pulls, args => args.Contains("[REL] gb_a: 2222222"));
+            Assert.Contains(pulls, args => args.Contains("[REL] gb_b: 3333333"));
             Assert.DoesNotContain(git.Calls, args => args.Contains("--force") || args.Contains("-f"));
 
             var first = RemoteHead(await Git(git, work, "ls-remote", "origin", "refs/heads/chore/pin-gb_a-" + newA[..7] + "-dev/19.0"));

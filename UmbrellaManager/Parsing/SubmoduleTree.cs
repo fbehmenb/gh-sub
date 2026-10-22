@@ -74,7 +74,14 @@ public static class SubmoduleTree
         {
             var isFolder = node.Children.Count > 0;
             var expanded = !collapsed.Contains(node.Path);
-            rows.Add(new VisibleRow(node.Path, node.Name, depth, isFolder, expanded, node.IsModule ? node.Sha : null));
+            rows.Add(new VisibleRow(
+                node.Path,
+                node.Name,
+                depth,
+                isFolder,
+                expanded,
+                node.IsModule ? node.Sha : null,
+                node.IsModule ? node.Branch : null));
             if (!isFolder || !expanded)
             {
                 return;

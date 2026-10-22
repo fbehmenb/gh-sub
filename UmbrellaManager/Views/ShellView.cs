@@ -1,4 +1,5 @@
 using Terminal.Gui.App;
+using Terminal.Gui.Drawing;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 
@@ -10,7 +11,10 @@ public sealed class ShellView : Window
 {
     public ShellView(SessionController controller, IApplication app)
     {
-        Title = "umbrella-manager-local";
+        Title = "";
+        BorderStyle = LineStyle.None;
+        ShadowStyle = ShadowStyles.None;
+        TabStop = TabBehavior.NoStop;
         var tabs = new BranchTabBar(controller)
         {
             X = 0,
@@ -22,45 +26,60 @@ public sealed class ShellView : Window
         {
             X = 0,
             Y = 1,
-            Width = Dim.Percent(40),
-            Height = Dim.Fill(1),
+            Width = Dim.Percent(50),
+            Height = Dim.Fill(KeyMap.FooterHeight),
         };
         var graph = new CommitGraphPane(controller)
         {
             X = Pos.Right(tree),
             Y = 1,
             Width = Dim.Fill(),
-            Height = Dim.Fill(1),
+            Height = Dim.Fill(KeyMap.FooterHeight),
+        };
+        var help = new HelpPane(controller)
+        {
+            X = 0,
+            Y = 1,
+            Width = Dim.Fill(),
+            Height = Dim.Fill(KeyMap.FooterHeight),
+            Visible = false,
+        };
+        var setup = new SetupPane(controller)
+        {
+            X = 0,
+            Y = 1,
+            Width = Dim.Fill(),
+            Height = Dim.Fill(KeyMap.FooterHeight),
+            Visible = false,
         };
         var status = new StatusLine(controller)
         {
             X = 0,
-            Y = Pos.AnchorEnd(1),
+            Y = Pos.AnchorEnd(KeyMap.FooterHeight),
             Width = Dim.Fill(),
-            Height = 1,
+            Height = KeyMap.FooterHeight,
         };
         var proposal = new PrProposalPane(controller)
         {
             X = 0,
-            Y = Pos.AnchorEnd(8),
+            Y = 1,
             Width = Dim.Fill(),
-            Height = 7,
+            Height = Dim.Fill(KeyMap.FooterHeight),
             Visible = false,
         };
         Add(tabs);
         Add(tree);
         Add(graph);
         Add(proposal);
+        Add(help);
+        Add(setup);
         Add(status);
         KeyMap.Attach(this, controller.Execute);
         controller.QuitRequested += () => app.RequestStop();
         controller.Changed += () =>
         {
-            var count = controller.PrProposal?.Count ?? 0;
-            proposal.Visible = count > 0;
-            var height = Math.Clamp(count, 1, 16);
-            proposal.Height = height;
-            proposal.Y = Pos.AnchorEnd(height + 1);
+            help.Visible = controller.HelpVisible && !controller.SetupOpen;
+            setup.Visible = controller.SetupOpen;
             if (controller.Focus == FocusPane.Graph)
             {
                 if (!graph.HasFocus)

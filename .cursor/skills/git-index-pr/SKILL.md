@@ -12,7 +12,7 @@ Einen Commit und einen PR gegen den Tab-Branch erzeugen, ohne den Working Tree d
 ## Schritte
 
 1. `git fetch origin`. Wenn `origin/<tab-branch>` seit dem Laden weitergelaufen ist, abbrechen und neu laden verlangen.
-2. Production-Tabs (`production/*`) nicht über diesen Weg beschreiben. Dort nur der Promotion-PR.
+2. Production-Tabs (`production/*`) nur für einen Pin-PR, dessen SHA schon auf `staging/<suffix>` lag und neuer als der Production-Pin ist. Hinzufügen und Entfernen bleiben dort gesperrt.
 3. Temporäre Indexdatei anlegen und danach löschen. `GIT_INDEX_FILE` nur für diese Befehle setzen.
 4. Je vorgemerktem Pin:
 
@@ -25,7 +25,7 @@ git push origin $commit:refs/heads/chore/pin-<modul>-<sha7>-<tab>
 gh pr create --base <tab-branch> --head chore/pin-<modul>-<sha7>-<tab> --title "<titel>" --body "<body>"
 ```
 
-5. Titel-Default: `chore(<modul>): pin auf <sha7> (<modul-branch>)`. Body: alter Pin, neuer Pin, Branch des Moduls, Link auf den Commit.
+5. Titel-Default: `[REL] <modul>: <version>`. `[REL]` ist der Odoo-Tag für ein Release. Die Version steht in `__manifest__.py` des gepinnten Commits. Fehlt sie, steht die Kurz-SHA. Body: alter Pin, neuer Pin, Branch des Moduls, Link auf den Commit.
 6. Hinzufügen zusätzlich: `.gitmodules` als Blob (`git hash-object -w --stdin`), `update-index --cacheinfo 100644,<blob>,.gitmodules` und den Gitlink. Titel-Default: `feat(<modul>): Submodul hinzufügen (<branch>@<sha7>)`.
 7. Entfernen zusätzlich: `update-index --force-remove <pfad>` und den Abschnitt aus `.gitmodules` streichen. Titel-Default: `chore(<modul>): Submodul entfernen`.
 8. Fehler je PR melden. Die übrigen PRs weiterlaufen lassen.

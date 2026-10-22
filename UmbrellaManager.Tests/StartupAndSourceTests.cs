@@ -1,3 +1,4 @@
+using UmbrellaManager.Config;
 using UmbrellaManager.Model;
 using UmbrellaManager.Process;
 using UmbrellaManager.Services;
@@ -57,6 +58,30 @@ public class StartupAndSourceTests
         var message = GitHub.GitHubText.Describe("", "HTTP 404: ghp_secretvalue");
         Assert.Contains("SSO", message);
         Assert.DoesNotContain("ghp_secretvalue", message);
+    }
+
+    [Fact]
+    public async Task Missing_manifest_has_no_version_and_rate_limit_stays_visible()
+    {
+        var missing = new UmbrellaSource(
+            new ScriptedProcess((_, _) => new ProcessResult(1, "", "HTTP 404: Not Found")),
+            new ResponseCache(),
+            "C:\\repo");
+        var version = await missing.ModuleVersionAsync(
+            "https://github.com/Org/ratocon_modules",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            CancellationToken.None);
+        Assert.Null(version);
+
+        var limited = new UmbrellaSource(
+            new ScriptedProcess((_, _) => new ProcessResult(1, "", "API rate limit exceeded")),
+            new ResponseCache(),
+            "C:\\repo");
+        var error = await Assert.ThrowsAsync<UserFacingException>(() => limited.ModuleVersionAsync(
+            "https://github.com/Org/gb_a",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            CancellationToken.None));
+        Assert.Equal(GitHub.GitHubText.Offline, error.Message);
     }
 
     [Fact]
@@ -162,10 +187,148 @@ public class StartupAndSourceTests
         Assert.Contains("schreibgeschützt", controller.Message);
 
         controller.Execute(AppCommand.CreatePr);
-        Assert.Contains("Promotion-PR", controller.Message);
+        Assert.Contains("Nichts vorgemerkt", controller.Message);
 
         controller.Execute(AppCommand.StagePin);
+        Assert.Contains("Modul wählen", controller.Message);
+    }
+
+    [Fact]
+    public async Task Production_enter_stages_only_a_newer_staging_pin()
+    {
+        var production = new string('a', 40);
+        var staging = new string('b', 40);
+        var older = new string('c', 40);
+        var foreign = new string('d', 40);
+        var tip = new string('e', 40);
+        var zeros = new string('0', 40);
+        var calls = new List<IReadOnlyList<string>>();
+        var process = new ScriptedProcess((file, args) =>
+        {
+            calls.Add(args);
+            var joined = string.Join(' ', args);
+            if (args.Contains("log"))
+            {
+                return new ProcessResult(0, $":160000 160000 {zeros} {older} A\tgb_a\n:160000 160000 {older} {staging} M\tgb_a\n", "");
+            }
+
+            if (args.Contains("rev-parse") && joined.Contains(':'))
+            {
+                return new ProcessResult(0, staging + "\n", "");
+            }
+
+            if (args.Contains("rev-parse"))
+            {
+                return new ProcessResult(0, tip + "\n", "");
+            }
+
+            if (args.Contains("ls-tree"))
+            {
+                return new ProcessResult(0, $"160000 commit {production}\tgb_a\n", "");
+            }
+
+            if (args.Contains("show"))
+            {
+                return new ProcessResult(0, """
+                    [submodule "gb_a"]
+                    	path = gb_a
+                    	url = https://github.com/Org/gb_a.git
+                    	branch = 19.0
+                    """, "");
+            }
+
+            if (joined.Contains("compare/"))
+            {
+                if (joined.Contains(staging))
+                {
+                    return new ProcessResult(0, "{\"status\":\"ahead\"}", "");
+                }
+
+                if (joined.Contains(older))
+                {
+                    return new ProcessResult(0, "{\"status\":\"behind\"}", "");
+                }
+
+                if (joined.Contains(foreign))
+                {
+                    return new ProcessResult(0, "{\"status\":\"ahead\"}", "");
+                }
+
+                return new ProcessResult(0, "{\"status\":\"ahead\"}", "");
+            }
+
+            if (joined.Contains("commits"))
+            {
+                var commits = "["
+                    + Commit(production, "production", "2026-10-01T00:00:00Z") + ","
+                    + Commit(older, "früher", "2026-10-02T00:00:00Z") + ","
+                    + Commit(staging, "staging", "2026-10-03T00:00:00Z") + ","
+                    + Commit(foreign, "fremd", "2026-10-04T00:00:00Z")
+                    + "]";
+                return new ProcessResult(0, commits, "");
+            }
+
+            if (joined.Contains("branches"))
+            {
+                return new ProcessResult(0, "[{\"name\":\"19.0\",\"commit\":{\"sha\":\"" + foreign + "\",\"commit\":{\"committer\":{\"date\":\"2026-10-04T00:00:00Z\"}}}}]", "");
+            }
+
+            if (joined.Contains("contents"))
+            {
+                return new ProcessResult(1, "", "HTTP 404: Not Found");
+            }
+
+            return new ProcessResult(0, "", "");
+        });
+        var controller = new SessionController(
+            new UmbrellaSource(process, new ResponseCache(), "C:\\repo"),
+            ["production/19.0", "staging/19.0"],
+            "chore/pin-*");
+        await controller.LoadCurrentAsync();
+
+        Assert.Equal(PinMark.Production, controller.Graph.Single(row => row.Sha == production).Mark);
+        Assert.Equal(PinMark.Staging, controller.Graph.Single(row => row.Sha == staging).Mark);
+        Assert.True(controller.Graph.Single(row => row.Sha == staging).Promotable);
+        Assert.False(controller.Graph.Single(row => row.Sha == older).Promotable);
+        Assert.False(controller.Graph.Single(row => row.Sha == foreign).Promotable);
+        Assert.Contains(calls, args => args.Contains("log") && args.Contains("origin/staging/19.0") && args.Contains("--raw"));
+        Assert.Contains(calls, args => string.Join(' ', args).Contains("compare/") && string.Join(' ', args).Contains(staging));
+        Assert.DoesNotContain(calls, args => string.Join(' ', args).Contains("compare/") && string.Join(' ', args).Contains(foreign));
+
+        controller.Execute(AppCommand.StagePin);
+        Assert.Equal(staging, controller.StagedPin("gb_a"));
+        Assert.Equal(staging, controller.Graph[controller.GraphIndex].Sha);
+        Assert.Contains(controller.Graph, row => row.Sha == staging && row.Tone == CommitTone.LightGreen);
+
+        controller.Execute(AppCommand.MoveUp);
+        controller.Execute(AppCommand.StagePin);
+        Assert.Equal(staging, controller.StagedPin("gb_a"));
+        Assert.Equal(staging, controller.Graph[controller.GraphIndex].Sha);
+
+        controller.Execute(AppCommand.StagePin);
+        Assert.Null(controller.StagedPin("gb_a"));
+
+        controller.Execute(AppCommand.MoveDown);
+        controller.Execute(AppCommand.StagePin);
+        Assert.Equal(staging, controller.StagedPin("gb_a"));
+        Assert.NotEqual(older, controller.StagedPin("gb_a"));
+
+        controller.Execute(AppCommand.ChooseNewer);
+        Assert.Contains("schon auf Staging", controller.Message);
+        Assert.Equal(staging, controller.StagedPin("gb_a"));
+
+        controller.Execute(AppCommand.AddModule);
         Assert.Contains("schreibgeschützt", controller.Message);
+
+        controller.Execute(AppCommand.CreatePr);
+        Assert.NotNull(controller.PrProposal);
+        Assert.Contains(controller.PrProposal, line => line.Contains("gb_a", StringComparison.Ordinal) && line.Contains('→'));
+        Assert.Contains(controller.PrProposal, line => line.Contains("production/19.0", StringComparison.Ordinal));
+    }
+
+    private static string Commit(string sha, string subject, string date)
+    {
+        return "{\"sha\":\"" + sha + "\",\"commit\":{\"message\":\"" + subject + "\",\"committer\":{\"date\":\"" + date + "\"}}}";
     }
 
     [Fact]
@@ -231,6 +394,10 @@ public class StartupAndSourceTests
         controller.Execute(AppCommand.MoveUp);
         controller.Execute(AppCommand.StagePin);
 
+        Assert.Contains("vorgemerkt: gb_a bbbbbbb", controller.Message);
+        controller.Execute(AppCommand.RemoveModule);
+        Assert.Equal("keine vorgemerkten Änderungen", controller.Message);
+        controller.Execute(AppCommand.ChooseNewer);
         Assert.Contains("vorgemerkt: gb_a bbbbbbb", controller.Message);
         Assert.Contains(controller.Graph, row => row.Sha == newer && row.Tone == CommitTone.LightGreen);
         Assert.Contains(controller.Graph, row => row.Sha == pin && row.Tone == CommitTone.DarkGreen);
@@ -319,9 +486,17 @@ public class StartupAndSourceTests
         controller.Execute(AppCommand.CreatePr);
 
         Assert.NotNull(controller.PrProposal);
-        Assert.Contains(controller.PrProposal, line => line.Contains("Wirklich folgende Änderungen", StringComparison.Ordinal));
         Assert.Contains(controller.PrProposal, line => line.Contains("gb_a", StringComparison.Ordinal) && line.Contains('→'));
+        Assert.Contains(controller.PrProposal, line => line.Contains("j pushen", StringComparison.Ordinal) && line.Contains("n abbrechen", StringComparison.Ordinal));
+        Assert.False(controller.PushRunning);
+        Assert.Equal(0, controller.PushDone);
         Assert.DoesNotContain(calls, args => args.Contains("push"));
+        controller.Execute(AppCommand.ShowHelp);
+        Assert.True(controller.HelpVisible);
+        Assert.NotNull(controller.PrProposal);
+        controller.Execute(AppCommand.ShowHelp);
+        Assert.False(controller.HelpVisible);
+        Assert.NotNull(controller.PrProposal);
 
         controller.Execute(AppCommand.CancelPush);
         Assert.Null(controller.PrProposal);
@@ -335,8 +510,64 @@ public class StartupAndSourceTests
         Assert.Contains(calls, args => args.Contains("push") && args.Any(argument => argument.Contains("refs/heads/chore/pin-gb_a-", StringComparison.Ordinal)));
         Assert.Contains(calls, args => args.Contains("--base") && args.Contains("dev/19.0") && args.Contains("--head"));
         Assert.DoesNotContain(calls, args => args.Contains("--force") || args.Contains("-f"));
-        Assert.Contains(controller.PrProposal!, line => line.Contains("example.invalid/pull/1", StringComparison.Ordinal));
+        Assert.Contains(controller.PrProposal!, line => line.Contains("Keine Konflikte · PR 1", StringComparison.Ordinal));
+        Assert.Contains(controller.PrProposal!, line => line.Contains("beliebige Taste schließt", StringComparison.Ordinal));
+        Assert.False(controller.PushRunning);
+        Assert.Equal(1, controller.PushDone);
+        Assert.Equal(1, controller.PushTotal);
         Assert.Equal("keine vorgemerkten Änderungen", controller.Message);
+    }
+
+    [Fact]
+    public void Setup_saves_the_interval_and_a_failed_check_keeps_the_mark()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "umbrella-manager-setup-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var file = Path.Combine(directory, "setup.json");
+        var local = Path.Combine(directory, "odoo");
+        new UserSetup("https://github.com/Org/odoo_umbrella", local).Save(file);
+        var controller = new SessionController(
+            new UmbrellaSource(new ScriptedProcess((_, _) => new ProcessResult(0, "", "")), new ResponseCache(), directory),
+            ["dev/19.0"],
+            "chore/pin-*");
+        try
+        {
+            controller.UseSetup(file, null);
+            controller.Execute(AppCommand.OpenSetup);
+            Assert.True(controller.SetupOpen);
+            Assert.Contains(controller.SetupLines, line => line.StartsWith(">  2 Minuten", StringComparison.Ordinal));
+            controller.Execute(AppCommand.MoveDown);
+            controller.Execute(AppCommand.StagePin);
+            var saved = UserSetup.Load(file, out var warning);
+            Assert.Null(warning);
+            Assert.Equal(300, saved!.PollIntervalSeconds);
+            Assert.Equal("https://github.com/Org/odoo_umbrella", saved.RepositoryUrl);
+            Assert.Equal(local, saved.LocalPath);
+            Assert.False(controller.SetupOpen);
+
+            const string oldTip = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+            const string newTip = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+            controller.RememberTips(new Dictionary<string, string> { ["dev/19.0"] = oldTip });
+            controller.NoteRemote(new Dictionary<string, string>
+            {
+                ["dev/19.0"] = newTip,
+                ["topic/x"] = oldTip,
+            });
+            Assert.True(controller.IsStale("dev/19.0"));
+            Assert.Contains("topic/x", controller.Message);
+            Assert.Contains("u holt den Stand", controller.Message);
+            controller.NoteRemote(null);
+            Assert.True(controller.IsStale("dev/19.0"));
+            Assert.Contains("fehlgeschlagen", controller.Message);
+        }
+        finally
+        {
+            controller.Cancel();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
     }
 }
 

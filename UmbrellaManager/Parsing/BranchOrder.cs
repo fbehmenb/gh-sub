@@ -37,6 +37,34 @@ public static partial class BranchOrder
         return names;
     }
 
+    public static IReadOnlyDictionary<string, string> ParseRemoteTips(string text)
+    {
+        var tips = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var line in Lines(text))
+        {
+            var tab = line.IndexOf('\t');
+            if (tab != 40)
+            {
+                continue;
+            }
+
+            var sha = line[..tab];
+            if (sha.Any(character => !Uri.IsHexDigit(character)))
+            {
+                continue;
+            }
+
+            const string prefix = "refs/heads/";
+            var reference = line[(tab + 1)..];
+            if (reference.StartsWith(prefix, StringComparison.Ordinal) && !reference.EndsWith("^{}", StringComparison.Ordinal))
+            {
+                tips[reference[prefix.Length..]] = sha;
+            }
+        }
+
+        return tips;
+    }
+
     public static IReadOnlyList<string> ParseLocalRemoteBranches(string text)
     {
         var names = new List<string>();
@@ -56,6 +84,18 @@ public static partial class BranchOrder
     public static bool IsProduction(string? branch)
     {
         return branch?.StartsWith("production/", StringComparison.Ordinal) == true;
+    }
+
+    public static string? StagingPartner(string? branch)
+    {
+        const string prefix = "production/";
+        if (string.IsNullOrEmpty(branch) || !branch.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var suffix = branch[prefix.Length..];
+        return suffix.Length == 0 ? null : "staging/" + suffix;
     }
 
     private static int Rank(string branch)

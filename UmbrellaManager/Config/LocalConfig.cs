@@ -6,7 +6,7 @@ public sealed record LocalConfig(string HiddenBranchPattern, string PinTitle)
 {
     public const string FileName = "umbrella-manager.local.json";
 
-    public const string DefaultPinTitle = "chore(<modul>): pin auf <sha7> (<modul-branch>)";
+    public const string DefaultPinTitle = "[REL] <modul>: <version>";
 
     public static LocalConfig Default { get; } = new("chore/pin-*", DefaultPinTitle);
 

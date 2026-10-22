@@ -5,8 +5,8 @@ alwaysApply: true
 
 # Grenzen
 
-- Production-Tabs (`production/*`) sind schreibgeschützt. Pin, Hinzufügen und Entfernen sind dort gesperrt. `c` legt nur den Promotion-PR von `staging/*` nach `production/*` an, Titel `chore: staging nach production`.
-- Vor dem Promotion-PR je Submodul prüfen, dass der Pin auf dem Standard-Branch liegt (`behind` oder `identical`). Bei Verstoß abbrechen und die Module nennen.
+- Production-Tabs (`production/*`) sind für freie Pins, Hinzufügen und Entfernen gesperrt. `Enter` merkt nur einen Commit vor, der neuer als der Production-Pin ist und schon als Gitlink auf `staging/<suffix>` lag. `p` legt dafür den Pin-PR gegen `production/<suffix>` an, ein PR je Modul. Titel bleibt die Pin-Vorlage. Der Body nennt den Staging-Branch als Quelle.
+- `c` wählt auf Production keinen Commit. `Entf` nimmt dort nur die Vormerkung zurück.
 - Nie direkt auf Tab-Branches pushen. Immer Arbeitsbranch und Pull Request.
 - Ein PR je Tab und je Modul. Mehrere vorgemerkte Pins im selben Tab ergeben mehrere PRs.
 - Kein Force-Push, kein Löschen von Branches, keine Änderungen an Rulesets.

@@ -68,7 +68,10 @@ public static class AppHost
             }
 
             var controller = new SessionController(source, branches, config.HiddenBranchPattern, config.PinTitle);
+            controller.RememberTips(source.BranchTips);
             await controller.LoadCurrentAsync().ConfigureAwait(false);
+            var setup = UserSetup.Load(UserSetup.DefaultFilePath, out _);
+            controller.UseSetup(UserSetup.DefaultFilePath, setup?.PollIntervalSeconds);
             IApplication app = Application.Create();
             app.Init();
             controller.Post = action => app.Invoke(action);

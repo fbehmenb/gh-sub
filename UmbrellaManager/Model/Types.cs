@@ -19,9 +19,9 @@ public sealed class TreeNode
     public List<TreeNode> Children { get; } = [];
 }
 
-public readonly record struct VisibleRow(string Path, string Name, int Depth, bool IsFolder, bool Expanded, string? Sha);
+public readonly record struct VisibleRow(string Path, string Name, int Depth, bool IsFolder, bool Expanded, string? Sha, string? Branch);
 
-public readonly record struct CommitInfo(string Sha, string Subject, DateTimeOffset Date);
+public readonly record struct CommitInfo(string Sha, string Subject, DateTimeOffset Date, string? TreeSha = null, IReadOnlyList<string>? Parents = null);
 
 public readonly record struct BranchTip(string Name, string TipSha, DateTimeOffset? TipDate, bool PinIsOnBranch);
 
@@ -32,7 +32,45 @@ public enum CommitTone
     LightGreen,
 }
 
-public sealed record GraphRow(string Sha, string Subject, DateTimeOffset Date, bool[] Dots, CommitTone Tone);
+public enum PinMark
+{
+    None,
+    Production,
+    Staging,
+    Both,
+}
+
+public readonly record struct GraphCell(char Symbol, int Lane);
+
+public sealed record GraphRow(
+    string Sha,
+    string Subject,
+    DateTimeOffset Date,
+    bool[] Dots,
+    CommitTone Tone,
+    string? TreeSha = null,
+    PinMark Mark = PinMark.None,
+    bool Promotable = false,
+    IReadOnlyList<string>? Parents = null,
+    IReadOnlyList<string>? Names = null,
+    IReadOnlyList<GraphCell>? Cells = null);
+
+public sealed class FileNode
+{
+    public required string Name { get; init; }
+
+    public required string Path { get; init; }
+
+    public bool IsFolder { get; set; }
+
+    public List<FileNode> Children { get; } = [];
+}
+
+public readonly record struct FileRow(string Path, string Name, int Depth, bool IsFolder, bool Expanded);
+
+public readonly record struct ParsedTree(IReadOnlyList<FileNode> Roots, bool Truncated);
+
+public sealed record FileSnapshot(IReadOnlyList<FileNode> Roots, string Message);
 
 public sealed record GraphSnapshot(IReadOnlyList<string> Lanes, IReadOnlyList<GraphRow> Rows, string Message);
 

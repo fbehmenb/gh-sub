@@ -34,12 +34,12 @@ Abweichung vom ursprünglichen Rahmen .NET 8: die stabile Terminal.Gui-v2-Linie 
 
 ## Bedienung
 
-- `←`/`→` Tab wechseln, `Tab` Fokus Liste/Graph, `↑`/`↓` navigieren, `Leertaste` Ordner auf/zu, `Enter` Pin vormerken (nochmal auf den aktuellen Pin = Vormerkung zurücknehmen), `a` Submodul hinzufügen, `Entf` Submodul zum Entfernen vormerken, `c` Commit + PR anlegen, `r` neu laden, `q` beenden.
+- `Tab` nächster Tab, `Umschalt+Tab` vorheriger Tab, `←` Submodule, `→` Commits, `↑`/`↓` navigieren, `Leertaste` Ordner auf/zu, `Enter` Pin vormerken (nochmal auf den aktuellen Pin = Vormerkung zurücknehmen), `a` Submodul hinzufügen, `Entf` Submodul zum Entfernen vormerken, `c` Commit + PR anlegen, `r` neu laden, `q` beenden.
 - Vor `c` ein Bestätigungsdialog mit der Liste aller PRs, die entstehen würden.
 
 ## Regeln
 
-- **Production ist schreibgeschützt.** Laut Struktur nimmt `production/*` nur PRs aus `staging/*` an. Im Production-Tab sind Pin, Hinzufügen und Entfernen gesperrt. `c` legt dort ausschließlich den Promotion-PR an: `gh pr create --base <production-branch> --head <staging-branch>`, Titel `chore: staging nach production`. Vorher Prüfung je Submodul, dass der Pin auf dem Standard-Branch des Moduls liegt (`gh api repos/<org>/<repo>/compare/<sha>...<branch>` mit Status `behind` oder `identical`); bei Verstoß abbrechen und die Module nennen. Die Prüfung läuft zusätzlich als Spalte im Production-Tab (Haken oder „nicht 19.0").
+- **Production übernimmt nur Staging-Pins.** Freies Pinnen, Hinzufügen und Entfernen sind im Production-Tab gesperrt. Rechts zeigt der Graph den Pin von `production/<suffix>` und den von `staging/<suffix>`. `Enter` merkt einen Commit vor, der als Gitlink auf diesem Staging-Branch lag und gegenüber dem Production-Pin `ahead` ist (`gh api repos/<org>/<repo>/compare/<production-sha>...<kandidat>`). Liegt die Auswahl nicht auf so einem Commit, springt `Enter` auf den aktuellen Staging-Pin. `p` legt daraus den Pin-PR nur für dieses Submodul gegen `production/<suffix>` an, ein PR je Modul, Titel wie die Pin-Vorlage. Der Body nennt den Staging-Branch als Quelle. `c` wählt dort nichts. Die Spalte mit Haken oder „nicht 19.0" bleibt zur Info und blockiert die Auswahl nicht.
 - **Nie direkt auf Tab-Branches pushen.** Immer Arbeitsbranch + PR.
 - **Ein PR je Tab und je Modul.** Vorgemerkte Pins mehrerer Module im selben Tab ergeben mehrere PRs, nicht einen.
 - Kein Force-Push, kein Löschen von Branches, keine Änderungen an Rulesets.
@@ -57,9 +57,9 @@ git push origin $commit:refs/heads/chore/pin-<modul>-<sha7>-<tab>
 gh pr create --base <tab-branch> --head chore/pin-<modul>-<sha7>-<tab> --title "<titel>" --body "<body>"
 ```
 
-- Vorher `git fetch origin` und prüfen, dass der Tab-Branch seit dem Laden nicht weitergelaufen ist; sonst melden und neu laden.
-- Titel-Vorlage in der Konfiguration, Default (Conventional Commits, passt zu einem späteren PR-Title-Check im Umbrella): `chore(<modul>): pin auf <sha7> (<modul-branch>)`
-- Body: alter Pin → neuer Pin, Branch des Moduls, Link auf den Commit.
+- Vorher `git fetch` des Tab-Branches. Hat sich der Gitlink eines vorgemerkten Pfads geändert, wird dieser Pin nicht gepusht. Ist der Tip nur weitergelaufen, setzt der Commit auf `origin/<tab-branch>` auf.
+- Titel-Vorlage in der Konfiguration, Default im Odoo-Format: `[REL] <modul>: <version>`. `[REL]` ist der Odoo-Tag für ein Release. Die Version kommt aus `__manifest__.py` des gepinnten Commits. Fehlt sie, steht die Kurz-SHA. Die Stufe steckt im Zielbranch des PRs.
+- Body: alter Pin → neuer Pin, Branch des Moduls, Link auf den Commit. Ein Production-Pin nennt zusätzlich den Staging-Branch als Quelle.
 - Ergebnis je PR anzeigen (URL), Fehler je PR einzeln melden, restliche PRs weiterlaufen lassen.
 
 ## Submodule hinzufügen und entfernen
@@ -96,7 +96,7 @@ Beide Titel-Vorlagen sind wie die Pin-Vorlage konfigurierbar.
 1. Start auf einem Umbrella-Clone zeigt Tabs für alle Remote-Branches und die Submodul-Struktur mit Ordnern.
 2. Im Graph ist der aktuelle Pin dunkelgrün, ein vorgemerkter Pin hellgrün.
 3. Zwei Pins in zwei Modulen im selben Tab erzeugen zwei PRs gegen diesen Tab-Branch.
-4. Der Production-Tab ist schreibgeschützt; `c` legt dort nur den Promotion-PR staging nach production an und bricht ab, wenn ein Pin nicht auf dem Standard-Branch liegt.
+4. Der Production-Tab merkt nur Staging-Pins vor, die neuer als Production sind, und `p` legt daraus einen Pin-PR für dieses Submodul an. Freies Pinnen, Hinzufügen und Entfernen bleiben gesperrt.
 5. Der Working Tree des Clones bleibt nach dem Lauf unverändert (`git status` sauber).
 6. Ohne `gh`-Login oder ohne Repo startet das Tool mit klarer Meldung statt Stacktrace.
 7. Ein Test gegen ein Wegwerf-Umbrella mit zwei Dummy-Submodulen läuft grün.

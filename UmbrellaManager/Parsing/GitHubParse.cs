@@ -1,4 +1,6 @@
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace UmbrellaManager.Parsing;
 
@@ -107,8 +109,49 @@ public sealed record GitHubRepo(string Owner, string Name)
     }
 }
 
-public static class GitHubParse
+public static partial class GitHubParse
 {
+    [GeneratedRegex("""['"]version['"]\s*:\s*['"](\d+(?:\.\d+)+)['"]""", RegexOptions.CultureInvariant)]
+    private static partial Regex ManifestVersionPattern();
+
+    public static string? ParseManifestVersion(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!document.RootElement.TryGetProperty("content", out var contentElement)
+                || contentElement.GetString() is not { Length: > 0 } content)
+            {
+                return null;
+            }
+
+            var encoding = document.RootElement.TryGetProperty("encoding", out var encodingElement)
+                ? encodingElement.GetString()
+                : "base64";
+            if (!string.Equals(encoding, "base64", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var bytes = Convert.FromBase64String(string.Concat(content.Where(character => !char.IsWhiteSpace(character))));
+            return ManifestVersion(Encoding.UTF8.GetString(bytes));
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+    }
+
+    public static string? ManifestVersion(string manifest)
+    {
+        var match = ManifestVersionPattern().Match(manifest);
+        return match.Success ? match.Groups[1].Value : null;
+    }
+
     public static IReadOnlyList<CommitInfo> ParseCommits(string json)
     {
         using var document = JsonDocument.Parse(json);
@@ -155,7 +198,27 @@ public static class GitHubParse
             date = parsed;
         }
 
-        return new CommitInfo(sha, subject, date);
+        string? treeSha = null;
+        if (commit.TryGetProperty("tree", out var tree)
+            && tree.TryGetProperty("sha", out var treeShaElement))
+        {
+            treeSha = treeShaElement.GetString();
+        }
+
+        var parents = new List<string>();
+        if (element.TryGetProperty("parents", out var parentArray) && parentArray.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var parent in parentArray.EnumerateArray())
+            {
+                var parentSha = parent.TryGetProperty("sha", out var parentElement) ? parentElement.GetString() : null;
+                if (!string.IsNullOrEmpty(parentSha))
+                {
+                    parents.Add(parentSha);
+                }
+            }
+        }
+
+        return new CommitInfo(sha, subject, date, treeSha, parents);
     }
 
     public static IReadOnlyList<BranchTip> ParseBranches(string json)

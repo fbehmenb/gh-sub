@@ -1,6 +1,7 @@
 namespace UmbrellaManager;
 
 using UmbrellaManager.Config;
+using UmbrellaManager.Input;
 using UmbrellaManager.Model;
 using UmbrellaManager.Parsing;
 using UmbrellaManager.Process;
@@ -11,10 +12,13 @@ public enum AppCommand
     PreviousBranch,
     NextBranch,
     FocusNext,
+    FocusTree,
+    FocusGraph,
     MoveUp,
     MoveDown,
     ToggleFolder,
     StagePin,
+    ChooseNewer,
     AddModule,
     RemoveModule,
     CreatePr,
@@ -22,12 +26,31 @@ public enum AppCommand
     CancelPush,
     Reload,
     Quit,
+    ShowHelp,
+    OpenSetup,
+    UpdateBranch,
+    PreviousBody,
+    NextBody,
+}
+
+public enum NoticeTone
+{
+    Idle,
+    Info,
+    Ok,
+    Conflict,
 }
 
 public enum FocusPane
 {
     Tree,
     Graph,
+}
+
+public enum PreviewBody
+{
+    Commits,
+    Files,
 }
 
 public sealed class SessionController
@@ -38,12 +61,32 @@ public sealed class SessionController
     private readonly Dictionary<string, SubmoduleEntry> _modules = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, string>> _pending = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _tips = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _compareStatus = new(StringComparer.OrdinalIgnoreCase);
     private readonly string _pinTitle;
+    private string? _promotionNote;
     private CancellationTokenSource _cancel = new();
     private int _epoch;
     private bool _confirming;
     private bool _publishing;
     private bool _resultVisible;
+    private bool _conflict;
+    private bool _pulling;
+    private bool _loadFailed;
+    private bool _setupOpen;
+    private int _setupIndex;
+    private int _pollSeconds;
+    private string? _setupFile;
+    private string? _watchNote;
+    private readonly HashSet<string> _stale = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _fileCollapsed = new(StringComparer.Ordinal);
+    private List<FileNode> _fileRoots = [];
+    private string? _filesKey;
+    private int _filesEpoch;
+    private CancellationTokenSource _filesCancel = new();
+    private CancellationTokenSource? _pollCancel;
+    private List<PinChange>? _proposal;
+    private List<PinChange> _pushChanges = [];
+    private readonly List<string> _pushLines = [];
 
     public SessionController(UmbrellaSource source, IReadOnlyList<string> branches, string pattern, string? pinTitle = null)
     {
@@ -81,9 +124,85 @@ public sealed class SessionController
 
     public string GraphMessage { get; private set; } = "";
 
+    public PreviewBody Body { get; private set; } = PreviewBody.Commits;
+
+    public IReadOnlyList<FileRow> Files { get; private set; } = [];
+
+    public int FileIndex { get; private set; }
+
+    public string FileMessage { get; private set; } = "";
+
     public string Message { get; private set; } = "keine vorgemerkten Änderungen";
 
     public IReadOnlyList<string>? PrProposal { get; private set; }
+
+    public int PushDone { get; private set; }
+
+    public int PushTotal { get; private set; }
+
+    public bool PushRunning => _publishing;
+
+    public NoticeTone Notice { get; private set; } = NoticeTone.Idle;
+
+    public bool HelpVisible { get; private set; }
+
+    public bool SetupOpen => _setupOpen;
+
+    public IReadOnlyList<string> SetupLines
+    {
+        get
+        {
+            var lines = new List<string> { "Einrichtung" };
+            for (var index = 0; index < UserSetup.PollSteps.Length; index++)
+            {
+                var mark = index == _setupIndex ? ">" : " ";
+                lines.Add(mark + "  " + UserSetup.PollLabel(UserSetup.PollSteps[index]));
+            }
+
+            lines.Add("Enter speichert    s schließt");
+            return lines;
+        }
+    }
+
+    public bool IsStale(string branch) => _stale.Contains(branch);
+
+    public int PendingCount(string branch)
+    {
+        return _pending.TryGetValue(branch, out var map) ? map.Count : 0;
+    }
+
+    public string? StagedPin(string path)
+    {
+        return Branch is null ? null : PendingSha(Branch, path);
+    }
+
+    public string RowActions
+    {
+        get
+        {
+            var onCommit = Focus == FocusPane.Graph && GraphIndex >= 0 && GraphIndex < Graph.Count;
+            var module = Selected is { IsFolder: false } row ? row : (VisibleRow?)null;
+            var anyStaged = Branch is not null && _pending.TryGetValue(Branch, out var map) && map.Count > 0;
+            return RowHint.Describe(new RowHintInput(
+                HelpVisible,
+                _publishing,
+                _resultVisible,
+                _confirming,
+                IsProduction,
+                Focus,
+                Selected is { IsFolder: true },
+                module is not null,
+                GraphMessage.StartsWith("Lade", StringComparison.Ordinal),
+                onCommit,
+                onCommit ? Graph[GraphIndex].Tone : CommitTone.Gray,
+                module is not null && PendingSha(Branch ?? "", module.Value.Path) is not null,
+                anyStaged,
+                _conflict,
+                onCommit && module is not null && IsNewerOnSameBranch(Graph[GraphIndex], module.Value.Sha),
+                _setupOpen,
+                onCommit && Graph[GraphIndex].Promotable));
+        }
+    }
 
     public IReadOnlyDictionary<string, string> PinMarks { get; private set; } = new Dictionary<string, string>();
 
@@ -100,8 +219,33 @@ public sealed class SessionController
 
     public void Execute(AppCommand command)
     {
+        if (_conflict && command is not (AppCommand.CancelPush or AppCommand.Quit))
+        {
+            Raise();
+            return;
+        }
+
+        if (_setupOpen && command != AppCommand.Quit)
+        {
+            HandleSetup(command);
+            return;
+        }
+
+        if (command == AppCommand.ShowHelp)
+        {
+            HelpVisible = !HelpVisible;
+            Raise();
+            return;
+        }
+
+        if (HelpVisible)
+        {
+            HelpVisible = false;
+        }
+
         if (_publishing && command != AppCommand.Quit)
         {
+            Raise();
             return;
         }
 
@@ -109,6 +253,7 @@ public sealed class SessionController
         {
             _resultVisible = false;
             PrProposal = null;
+            Notice = NoticeTone.Idle;
             if (command is AppCommand.ConfirmPush or AppCommand.CancelPush)
             {
                 Raise();
@@ -118,6 +263,7 @@ public sealed class SessionController
 
         if (_confirming && command is not (AppCommand.ConfirmPush or AppCommand.CancelPush or AppCommand.Quit))
         {
+            Raise();
             return;
         }
 
@@ -133,6 +279,20 @@ public sealed class SessionController
                 Focus = Focus == FocusPane.Tree ? FocusPane.Graph : FocusPane.Tree;
                 Raise();
                 break;
+            case AppCommand.FocusTree:
+                Focus = FocusPane.Tree;
+                Raise();
+                break;
+            case AppCommand.FocusGraph:
+                Focus = FocusPane.Graph;
+                Raise();
+                break;
+            case AppCommand.PreviousBody:
+                SetBody(PreviewBody.Commits);
+                break;
+            case AppCommand.NextBody:
+                SetBody(PreviewBody.Files);
+                break;
             case AppCommand.MoveUp:
                 Move(-1);
                 break;
@@ -145,33 +305,43 @@ public sealed class SessionController
             case AppCommand.StagePin:
                 StagePin();
                 break;
+            case AppCommand.ChooseNewer:
+                ChooseNewer();
+                break;
             case AppCommand.AddModule:
                 Say(IsProduction ? "Production ist schreibgeschützt." : "Hinzufügen folgt in der nächsten Phase.");
                 break;
             case AppCommand.RemoveModule:
-                Say(IsProduction ? "Production ist schreibgeschützt." : "Entfernen folgt in der nächsten Phase.");
+                ClearStagedPin();
                 break;
             case AppCommand.CreatePr:
-                if (IsProduction)
-                {
-                    Say("Promotion-PR folgt in der nächsten Phase.");
-                    break;
-                }
-
-                AskPush();
+                _ = PreparePushAsync();
                 break;
             case AppCommand.ConfirmPush:
-                if (_confirming)
+                if (_confirming && _proposal is not null)
                 {
                     _ = PublishAsync();
                 }
 
                 break;
             case AppCommand.CancelPush:
+                if (_conflict)
+                {
+                    _conflict = false;
+                    _resultVisible = false;
+                    PrProposal = null;
+                    Notice = NoticeTone.Idle;
+                    Say(Status(Branch));
+                    break;
+                }
+
                 if (_confirming)
                 {
                     _confirming = false;
+                    _proposal = null;
                     PrProposal = null;
+                    Notice = NoticeTone.Idle;
+                    _ = Restart();
                     Say("Push abgebrochen. " + Status(Branch));
                 }
 
@@ -179,8 +349,17 @@ public sealed class SessionController
             case AppCommand.Reload:
                 _ = ReloadAsync();
                 break;
+            case AppCommand.OpenSetup:
+                HelpVisible = false;
+                _setupIndex = UserSetup.PollIndex(_pollSeconds);
+                _setupOpen = true;
+                Raise();
+                break;
+            case AppCommand.UpdateBranch:
+                _ = UpdateBranchAsync();
+                break;
             case AppCommand.Quit:
-                _cancel.Cancel();
+                Cancel();
                 QuitRequested?.Invoke();
                 break;
         }
@@ -188,7 +367,227 @@ public sealed class SessionController
 
     public Task LoadCurrentAsync() => LoadBranchAsync(BranchIndex, ++_epoch);
 
-    public void Cancel() => _cancel.Cancel();
+    public void Cancel()
+    {
+        _cancel.Cancel();
+        _pollCancel?.Cancel();
+    }
+
+    public void RememberTips(IReadOnlyDictionary<string, string> tips)
+    {
+        _tips.Clear();
+        foreach (var pair in tips)
+        {
+            _tips[pair.Key] = pair.Value;
+        }
+
+        _stale.Clear();
+    }
+
+    public void NoteRemote(IReadOnlyDictionary<string, string>? remote)
+    {
+        if (remote is null)
+        {
+            _watchNote = "Remote-Prüfung fehlgeschlagen.";
+        }
+        else
+        {
+            _stale.Clear();
+            foreach (var branch in RemoteWatch.Stale(_tips, remote))
+            {
+                if (Branches.Contains(branch))
+                {
+                    _stale.Add(branch);
+                }
+            }
+
+            var unknown = RemoteWatch.Unlisted(Branches, remote.Keys, _pattern);
+            _watchNote = unknown.Count switch
+            {
+                0 => null,
+                1 => "Neuer Branch " + unknown[0] + ", r lädt die Tabs.",
+                _ => unknown.Count + " neue Branches, r lädt die Tabs.",
+            };
+        }
+
+        Message = Status(Branch);
+        Raise();
+    }
+
+    public void UseSetup(string filePath, int? seconds)
+    {
+        _setupFile = filePath;
+        _setupIndex = UserSetup.PollIndex(seconds);
+        SetPollInterval(UserSetup.Normalize(seconds));
+    }
+
+    private void HandleSetup(AppCommand command)
+    {
+        switch (command)
+        {
+            case AppCommand.OpenSetup:
+                _setupOpen = false;
+                Say(Status(Branch));
+                break;
+            case AppCommand.MoveUp:
+                _setupIndex = Math.Max(0, _setupIndex - 1);
+                Raise();
+                break;
+            case AppCommand.MoveDown:
+                _setupIndex = Math.Min(UserSetup.PollSteps.Length - 1, _setupIndex + 1);
+                Raise();
+                break;
+            case AppCommand.StagePin:
+                SavePoll();
+                break;
+            default:
+                Raise();
+                break;
+        }
+    }
+
+    private void SavePoll()
+    {
+        var seconds = UserSetup.PollSteps[_setupIndex];
+        if (_setupFile is not null)
+        {
+            var existing = UserSetup.Load(_setupFile, out _);
+            if (existing is not null)
+            {
+                (existing with { PollIntervalSeconds = seconds }).Save(_setupFile);
+            }
+        }
+
+        _setupOpen = false;
+        SetPollInterval(seconds);
+        Say("Prüfung " + UserSetup.PollLabel(seconds) + ". " + Status(Branch));
+    }
+
+    private void SetPollInterval(int seconds)
+    {
+        _pollSeconds = seconds;
+        var previous = _pollCancel;
+        _pollCancel = new CancellationTokenSource();
+        previous?.Cancel();
+        if (seconds > 0)
+        {
+            _ = PollLoopAsync(seconds, _pollCancel.Token);
+        }
+    }
+
+    private async Task PollLoopAsync(int seconds, CancellationToken token)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(seconds));
+            while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+            {
+                await CheckRemoteAsync(token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task CheckRemoteAsync(CancellationToken token)
+    {
+        if (_publishing || _pulling || _confirming || _setupOpen)
+        {
+            return;
+        }
+
+        try
+        {
+            var remote = await _source.ListRemoteHeadsAsync(token).ConfigureAwait(false);
+            if (token.IsCancellationRequested)
+            {
+                return;
+            }
+
+            Post(() =>
+            {
+                if (token.IsCancellationRequested || _publishing || _pulling || _confirming)
+                {
+                    return;
+                }
+
+                NoteRemote(remote);
+            });
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task UpdateBranchAsync()
+    {
+        if (Branch is null || _pulling || _publishing || _confirming)
+        {
+            return;
+        }
+
+        var branch = Branch;
+        var index = BranchIndex;
+        _pulling = true;
+        var before = _modules.ToDictionary(pair => pair.Key, pair => (string?)pair.Value.Sha, StringComparer.Ordinal);
+        var previous = _tips.TryGetValue(branch, out var loaded) ? loaded : null;
+        var epoch = ++_epoch;
+        Say("Hole " + branch + " …");
+        var token = Restart();
+        try
+        {
+            await _source.FetchBranchTipAsync(branch, token).ConfigureAwait(false);
+            await LoadBranchAsync(index, epoch).ConfigureAwait(false);
+            if (epoch != _epoch || _loadFailed)
+            {
+                Post(() => { _pulling = false; });
+                return;
+            }
+
+            Post(() =>
+            {
+                if (epoch != _epoch)
+                {
+                    _pulling = false;
+                    return;
+                }
+
+                _stale.Remove(branch);
+                _pulling = false;
+                IReadOnlyDictionary<string, string> pending = _pending.TryGetValue(branch, out var map)
+                    ? map
+                    : new Dictionary<string, string>();
+                var after = _modules.ToDictionary(pair => pair.Key, pair => (string?)pair.Value.Sha, StringComparer.Ordinal);
+                var moved = PendingBase.Moved(pending, before, after);
+                var now = _tips.TryGetValue(branch, out var tip) ? tip : null;
+                var advanced = previous is not null && now is not null && !previous.Equals(now, StringComparison.OrdinalIgnoreCase);
+                if (moved.Count > 0)
+                {
+                    Message = "Basis geändert: " + string.Join(", ", moved) + ". " + Status(branch);
+                }
+                else if (advanced)
+                {
+                    Message = "Stand geholt. " + Status(branch);
+                }
+                else
+                {
+                    Message = branch + " ist aktuell. " + Status(branch);
+                }
+
+                Raise();
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            Post(() => { _pulling = false; });
+        }
+        catch (UserFacingException ex)
+        {
+            Fail(epoch, ex.Message);
+            Post(() => { _pulling = false; });
+        }
+    }
 
     private async Task SelectBranchAsync(int delta)
     {
@@ -238,9 +637,11 @@ public sealed class SessionController
                 index = found >= 0 ? found : 0;
             }
 
+            var tips = _source.BranchTips;
             Post(() =>
             {
                 Branches = branches;
+                RememberTips(tips);
             });
             await LoadBranchAsync(index, epoch).ConfigureAwait(false);
         }
@@ -255,6 +656,7 @@ public sealed class SessionController
 
     private async Task LoadBranchAsync(int index, int epoch)
     {
+        _loadFailed = false;
         if (Branches.Count == 0)
         {
             Say("Keine Remote-Branches gefunden.");
@@ -296,6 +698,8 @@ public sealed class SessionController
                 Graph = [];
                 Lanes = [];
                 GraphMessage = selected?.IsFolder == true ? "Ordner, kein Submodul." : "Lade Commits …";
+                RememberPromotion(null);
+                NoteGraphCleared(GraphMessage);
                 PinMarks = new Dictionary<string, string>();
                 Message = Status(branch);
                 Raise();
@@ -338,7 +742,7 @@ public sealed class SessionController
                 return;
             }
 
-            var snapshot = await _source.LoadGraphAsync(module, token, PendingSha(branch, module.Path)).ConfigureAwait(false);
+            var loaded = await LoadModuleGraphAsync(branch, module, PendingSha(branch, module.Path), token).ConfigureAwait(false);
             if (epoch != _epoch)
             {
                 return;
@@ -351,11 +755,17 @@ public sealed class SessionController
                     return;
                 }
 
-                Lanes = snapshot.Lanes;
-                Graph = snapshot.Rows;
-                GraphIndex = PinRow(snapshot.Rows, module.Sha);
-                GraphMessage = snapshot.Message;
+                Lanes = loaded.Snapshot.Lanes;
+                Graph = loaded.Snapshot.Rows;
+                GraphIndex = PinRow(loaded.Snapshot.Rows, module.Sha);
+                GraphMessage = loaded.Snapshot.Message;
+                RememberPromotion(loaded.Promotion);
                 Message = Status(branch);
+                if (Body == PreviewBody.Files)
+                {
+                    RequestFiles();
+                }
+
                 Raise();
             });
         }
@@ -372,6 +782,18 @@ public sealed class SessionController
     {
         if (Focus == FocusPane.Graph)
         {
+            if (Body == PreviewBody.Files)
+            {
+                if (Files.Count == 0)
+                {
+                    return;
+                }
+
+                FileIndex = Math.Clamp(FileIndex + delta, 0, Files.Count - 1);
+                Raise();
+                return;
+            }
+
             if (Graph.Count == 0)
             {
                 return;
@@ -403,6 +825,8 @@ public sealed class SessionController
         {
             Graph = [];
             GraphMessage = "Lade Commits …";
+            RememberPromotion(null);
+            NoteGraphCleared(GraphMessage);
             Raise();
         });
         var token = Restart();
@@ -413,7 +837,10 @@ public sealed class SessionController
 
         try
         {
-            var snapshot = await _source.LoadGraphAsync(module, token, Branch is null ? null : PendingSha(Branch, path)).ConfigureAwait(false);
+            var branchName = Branch;
+            var loaded = branchName is null
+                ? new LoadedGraph(await _source.LoadGraphAsync(module, token, null).ConfigureAwait(false), null)
+                : await LoadModuleGraphAsync(branchName, module, PendingSha(branchName, path), token).ConfigureAwait(false);
             if (epoch != _epoch)
             {
                 return;
@@ -426,11 +853,17 @@ public sealed class SessionController
                     return;
                 }
 
-                Lanes = snapshot.Lanes;
-                Graph = snapshot.Rows;
-                GraphIndex = PinRow(snapshot.Rows, module.Sha);
-                GraphMessage = snapshot.Message;
+                Lanes = loaded.Snapshot.Lanes;
+                Graph = loaded.Snapshot.Rows;
+                GraphIndex = PinRow(loaded.Snapshot.Rows, module.Sha);
+                GraphMessage = loaded.Snapshot.Message;
+                RememberPromotion(loaded.Promotion);
                 Message = Status(Branch);
+                if (Body == PreviewBody.Files)
+                {
+                    RequestFiles();
+                }
+
                 Raise();
             });
         }
@@ -443,7 +876,7 @@ public sealed class SessionController
         }
     }
 
-    private void AskPush()
+    private async Task PreparePushAsync()
     {
         var changes = CurrentChanges();
         if (changes.Count == 0)
@@ -458,32 +891,161 @@ public sealed class SessionController
             return;
         }
 
+        var branch = Branch;
+        var loadedTip = _tips[branch];
         _confirming = true;
-        PrProposal = PinPublisher.Question(Branch, changes, _pinTitle);
-        Say("Wirklich folgende Änderungen als Pull Request pushen? j ja, n nein");
+        _conflict = false;
+        _proposal = null;
+        Notice = NoticeTone.Info;
+        PushDone = 0;
+        PushTotal = 0;
+        PrProposal = ["Versionen werden gelesen …"];
+        Say("Versionen werden gelesen …");
+        var epoch = _epoch;
+        var token = Restart();
+        try
+        {
+            var remoteTip = await _source.FetchBranchTipAsync(branch, token).ConfigureAwait(false);
+            var moved = !remoteTip.Equals(loadedTip, StringComparison.OrdinalIgnoreCase);
+            var clean = new List<PinChange>();
+            var conflicts = new List<string>();
+            foreach (var change in changes)
+            {
+                if (!moved)
+                {
+                    clean.Add(change);
+                    continue;
+                }
+
+                var loadedLink = await _source.ReadGitlinkAsync(loadedTip, change.Path, token).ConfigureAwait(false);
+                var remoteLink = await _source.ReadGitlinkAsync(remoteTip, change.Path, token).ConfigureAwait(false);
+                if (PinPublisher.GitlinkConflicts(loadedLink, remoteLink))
+                {
+                    conflicts.Add(change.Name);
+                }
+                else
+                {
+                    clean.Add(change);
+                }
+            }
+
+            if (clean.Count == 0)
+            {
+                var blocked = "Konflikt " + string.Join(", ", conflicts) + ": der Pin auf " + branch + " wurde geändert. u holt den Stand.";
+                Post(() =>
+                {
+                    if (epoch != _epoch)
+                    {
+                        return;
+                    }
+
+                    _confirming = false;
+                    _proposal = null;
+                    _resultVisible = true;
+                    Notice = NoticeTone.Conflict;
+                    PrProposal = [blocked];
+                    Message = blocked;
+                    Raise();
+                });
+                return;
+            }
+
+            var resolved = new List<PinChange>(clean.Count);
+            foreach (var change in clean)
+            {
+                var version = await _source.ModuleVersionAsync(change.ModuleUrl, change.NewSha, token).ConfigureAwait(false);
+                resolved.Add(change with { Version = version });
+            }
+
+            Post(() =>
+            {
+                if (epoch != _epoch || !_confirming)
+                {
+                    return;
+                }
+
+                _proposal = resolved;
+                Notice = NoticeTone.Info;
+                PushDone = 0;
+                PushTotal = resolved.Count;
+                PrProposal = PinPublisher.PlanLines(branch, resolved, conflicts, moved, _pinTitle);
+                Say("Pull Requests auf " + branch);
+            });
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (UserFacingException ex)
+        {
+            var message = ex.Message;
+            Post(() =>
+            {
+                if (epoch != _epoch)
+                {
+                    return;
+                }
+
+                _confirming = false;
+                _proposal = null;
+                PrProposal = null;
+                Notice = NoticeTone.Idle;
+                Message = message;
+                Raise();
+            });
+        }
     }
 
     private async Task PublishAsync()
     {
         var branch = Branch;
-        if (branch is null || !_tips.TryGetValue(branch, out var tip))
+        var changes = _proposal;
+        if (branch is null || changes is null || !_tips.TryGetValue(branch, out var tip))
         {
             _confirming = false;
+            _proposal = null;
             PrProposal = null;
+            Notice = NoticeTone.Idle;
             Say("Der Stand des Branches ist unbekannt. Bitte mit r neu laden.");
             return;
         }
 
-        var changes = CurrentChanges();
+        _pushChanges = changes.ToList();
+        _proposal = null;
         _confirming = false;
         _publishing = true;
-        PrProposal = ["Lege Pull Requests an …"];
-        Say("Lege Pull Requests an …");
+        Notice = NoticeTone.Info;
+        PushDone = 0;
+        PushTotal = changes.Count;
+        _pushLines.Clear();
+        _pushLines.Add("Push auf " + branch);
+        _pushLines.Add("");
+        foreach (var change in changes)
+        {
+            _pushLines.Add(PinPublisher.ChangeLine(change) + "   wartet");
+        }
+
+        PrProposal = _pushLines.ToArray();
+        Say("Push auf " + branch);
         var epoch = _epoch;
         var token = Restart();
         try
         {
-            var results = await _source.PublishPinsAsync(branch, tip, changes, _pinTitle, token).ConfigureAwait(false);
+            var results = await _source.PublishPinsAsync(
+                branch,
+                tip,
+                changes,
+                _pinTitle,
+                token,
+                tick => Post(() =>
+                {
+                    if (epoch != _epoch || !_publishing)
+                    {
+                        return;
+                    }
+
+                    NotePush(tick);
+                })).ConfigureAwait(false);
+            var currentTip = await _source.ReadTipAsync(branch, token).ConfigureAwait(false);
             if (epoch != _epoch)
             {
                 Post(() => { _publishing = false; });
@@ -513,7 +1075,31 @@ public sealed class SessionController
 
                 _publishing = false;
                 _resultVisible = true;
-                PrProposal = results.Select(result => result.Text).ToList();
+                PushDone = results.Count;
+                PushTotal = results.Count;
+                _pushLines.Clear();
+                _pushLines.Add("Push auf " + branch);
+                _pushLines.Add("");
+                for (var index = 0; index < results.Count; index++)
+                {
+                    var label = index < _pushChanges.Count
+                        ? PinPublisher.ChangeLine(_pushChanges[index])
+                        : results[index].Path;
+                    _pushLines.Add(label + "   " + results[index].Text);
+                }
+
+                _pushLines.Add("");
+                _pushLines.Add("beliebige Taste schließt");
+                if (currentTip is not null
+                    && _tips.TryGetValue(branch, out var loaded)
+                    && !currentTip.Equals(loaded, StringComparison.OrdinalIgnoreCase))
+                {
+                    _stale.Add(branch);
+                }
+
+                _conflict = results.Any(result => result.Conflict);
+                Notice = _conflict ? NoticeTone.Conflict : results.Any(result => result.Created) ? NoticeTone.Ok : NoticeTone.Info;
+                PrProposal = _pushLines.ToArray();
                 Message = Status(branch);
                 Raise();
             });
@@ -524,6 +1110,7 @@ public sealed class SessionController
             {
                 _publishing = false;
                 PrProposal = null;
+                Notice = NoticeTone.Idle;
                 Raise();
             });
         }
@@ -539,11 +1126,30 @@ public sealed class SessionController
 
                 _publishing = false;
                 PrProposal = null;
+                Notice = NoticeTone.Idle;
                 Message = message;
                 GraphMessage = message;
                 Raise();
             });
         }
+    }
+
+    private void NotePush(PushTick tick)
+    {
+        var line = tick.Index + 2;
+        if (line >= 0 && line < _pushLines.Count)
+        {
+            _pushLines[line] = tick.Text;
+        }
+
+        if (tick.Finished)
+        {
+            PushDone = tick.Index + 1;
+        }
+
+        PushTotal = tick.Total;
+        PrProposal = _pushLines.ToArray();
+        Raise();
     }
 
     private List<PinChange> CurrentChanges()
@@ -563,35 +1169,301 @@ public sealed class SessionController
         return changes;
     }
 
+    private async Task<LoadedGraph> LoadModuleGraphAsync(
+        string branch,
+        SubmoduleEntry module,
+        string? pending,
+        CancellationToken token)
+    {
+        if (!BranchOrder.IsProduction(branch))
+        {
+            var plain = await _source.LoadGraphAsync(module, token, pending).ConfigureAwait(false);
+            return new LoadedGraph(plain, null);
+        }
+
+        var partner = BranchOrder.StagingPartner(branch);
+        string? note = null;
+        string? stagingTip = null;
+        IReadOnlyList<string> history = [];
+        if (partner is null || !Branches.Contains(partner))
+        {
+            note = partner is null ? "Kein Staging-Branch zu diesem Tab." : "Kein Tab " + partner + ".";
+        }
+        else
+        {
+            var pins = await _source.LoadStagingHistoryAsync(partner, module.Path, token).ConfigureAwait(false);
+            stagingTip = pins.Current;
+            history = pins.Pins;
+            if (stagingTip is null)
+            {
+                note = "Staging hat für dieses Modul keinen Pin.";
+            }
+        }
+
+        if (string.IsNullOrEmpty(module.Sha))
+        {
+            note ??= "Production hat keinen Pin.";
+        }
+
+        var snapshot = await _source.LoadGraphAsync(module, token, pending, stagingTip).ConfigureAwait(false);
+        var compared = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrEmpty(module.Sha) && history.Count > 0)
+        {
+            var candidates = history
+                .Where(sha => !Sha.Same(sha, module.Sha))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            foreach (var pair in await _source.ComparePinsAsync(module, module.Sha, candidates, token).ConfigureAwait(false))
+            {
+                compared[pair.Key] = pair.Value;
+            }
+        }
+
+        var promotable = compared
+            .Where(pair => StagingHistory.IsPromotable(true, pair.Value))
+            .Select(pair => pair.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var rows = snapshot.Rows;
+        var missing = promotable.Where(sha => rows.All(row => !Sha.Same(row.Sha, sha))).ToList();
+        if (missing.Count > 0)
+        {
+            var extras = await _source.LoadCommitsAsync(module, missing, token).ConfigureAwait(false);
+            rows = GraphBuilder.Include(rows, extras, module.Sha, pending);
+        }
+
+        rows = GraphBuilder.MarkPromotion(rows, module.Sha, stagingTip, promotable);
+        return new LoadedGraph(snapshot with { Rows = rows }, new PromotionState(note, compared));
+    }
+
+    private void RememberPromotion(PromotionState? promotion)
+    {
+        _compareStatus.Clear();
+        if (promotion is null)
+        {
+            _promotionNote = null;
+            return;
+        }
+
+        _promotionNote = promotion.Note;
+        foreach (var pair in promotion.Compared)
+        {
+            _compareStatus[pair.Key] = pair.Value;
+        }
+    }
+
+    private void StagePromotion()
+    {
+        if (Branch is null || Selected is not { IsFolder: false } row || !_modules.TryGetValue(row.Path, out var module))
+        {
+            Say(Selected is { IsFolder: true } ? "Ordner, kein Submodul." : "Modul wählen.");
+            return;
+        }
+
+        if (Graph.Count == 0)
+        {
+            Say(string.IsNullOrEmpty(GraphMessage) ? "Kein Commit gewählt." : GraphMessage);
+            return;
+        }
+
+        var onCommit = Focus == FocusPane.Graph
+            && Body == PreviewBody.Commits
+            && GraphIndex >= 0
+            && GraphIndex < Graph.Count;
+        if (onCommit && Graph[GraphIndex].Promotable)
+        {
+            var chosen = Graph[GraphIndex].Sha;
+            var pending = PendingSha(Branch, row.Path);
+            ApplyPin(Sha.Same(chosen, pending) ? null : chosen, row, module);
+            return;
+        }
+
+        JumpToStaging(row, module);
+    }
+
+    private void JumpToStaging(VisibleRow row, SubmoduleEntry module)
+    {
+        if (Body != PreviewBody.Commits)
+        {
+            Body = PreviewBody.Commits;
+        }
+
+        var index = -1;
+        for (var i = 0; i < Graph.Count; i++)
+        {
+            if (Graph[i].Mark is PinMark.Staging or PinMark.Both)
+            {
+                index = i;
+                break;
+            }
+        }
+
+        if (index < 0)
+        {
+            Say(_promotionNote ?? "Staging-Pin ist nicht im Graph.");
+            return;
+        }
+
+        Focus = FocusPane.Graph;
+        GraphIndex = index;
+        var target = Graph[index];
+        if (!target.Promotable)
+        {
+            Say(Refusal(target));
+            return;
+        }
+
+        ApplyPin(target.Sha, row, module);
+    }
+
+    private string Refusal(GraphRow row)
+    {
+        if (row.Mark == PinMark.Both)
+        {
+            return "Staging und Production sind gleich.";
+        }
+
+        if (!_compareStatus.TryGetValue(row.Sha, out var status))
+        {
+            return _promotionNote ?? "Dieser Commit lag nie auf Staging.";
+        }
+
+        return status switch
+        {
+            "identical" => "Staging und Production sind gleich.",
+            "behind" => "Dieser Staging-Pin ist älter als Production.",
+            "diverged" => "Dieser Staging-Pin ist verzweigt, nicht neuer als Production.",
+            _ => "Dieser Staging-Pin konnte nicht mit Production verglichen werden.",
+        };
+    }
+
+    private void ClearPromotion()
+    {
+        if (Selected is not { IsFolder: false } row || !_modules.TryGetValue(row.Path, out var module) || Branch is null)
+        {
+            Say("Modul wählen.");
+            return;
+        }
+
+        if (PendingSha(Branch, row.Path) is null)
+        {
+            Say("Keine Vormerkung.");
+            return;
+        }
+
+        ApplyPin(null, row, module);
+    }
+
     private void StagePin()
     {
         if (IsProduction)
         {
-            Say("Production ist schreibgeschützt.");
+            StagePromotion();
             return;
         }
 
-        if (Branch is null || Focus != FocusPane.Graph || GraphIndex < 0 || GraphIndex >= Graph.Count)
+        if (!TrySelectedModule(true, out var row, out var module))
         {
-            Say("Commit im Graph wählen.");
-            return;
-        }
-
-        if (Selected is not { IsFolder: false } row || !_modules.TryGetValue(row.Path, out var module))
-        {
-            Say("Ordner, kein Submodul.");
             return;
         }
 
         var chosen = Graph[GraphIndex].Sha;
-        var map = PendingMap(Branch);
-        if (Sha.Same(chosen, module.Sha))
+        ApplyPin(Sha.Same(chosen, module.Sha) ? null : chosen, row, module);
+    }
+
+    private void ChooseNewer()
+    {
+        if (IsProduction)
+        {
+            Say("In Production nur Commits, die schon auf Staging lagen. Enter wählt den Staging-Stand.");
+            return;
+        }
+
+        if (!TrySelectedModule(true, out var row, out var module))
+        {
+            return;
+        }
+
+        var chosen = Graph[GraphIndex];
+        if (!IsNewerOnSameBranch(chosen, module.Sha))
+        {
+            Say("c wählt nur einen neueren Commit auf demselben Branch.");
+            return;
+        }
+
+        ApplyPin(chosen.Sha, row, module);
+    }
+
+    private void ClearStagedPin()
+    {
+        if (IsProduction)
+        {
+            ClearPromotion();
+            return;
+        }
+
+        if (Selected is not { IsFolder: false } row || !_modules.TryGetValue(row.Path, out var module) || Branch is null)
+        {
+            Say("Modul wählen.");
+            return;
+        }
+
+        if (PendingSha(Branch, row.Path) is null)
+        {
+            Say("Keine Vormerkung.");
+            return;
+        }
+
+        ApplyPin(null, row, module);
+    }
+
+    private bool TrySelectedModule(bool graph, out VisibleRow row, out SubmoduleEntry module)
+    {
+        row = default;
+        module = null!;
+        if (IsProduction)
+        {
+            Say("Production ist schreibgeschützt.");
+            return false;
+        }
+
+        if (Branch is null || (graph && (Focus != FocusPane.Graph || GraphIndex < 0 || GraphIndex >= Graph.Count)))
+        {
+            Say("Commit im Graph wählen.");
+            return false;
+        }
+
+        if (Selected is not { IsFolder: false } selected || !_modules.TryGetValue(selected.Path, out var found))
+        {
+            Say("Ordner, kein Submodul.");
+            return false;
+        }
+
+        row = selected;
+        module = found;
+        return true;
+    }
+
+    private bool IsNewerOnSameBranch(GraphRow chosen, string? pinSha)
+    {
+        if (chosen.Dots.Length == 0 || !chosen.Dots[0] || Sha.Same(chosen.Sha, pinSha))
+        {
+            return false;
+        }
+
+        var pin = Graph.FirstOrDefault(commit => Sha.Same(commit.Sha, pinSha));
+        return pin is null || chosen.Date > pin.Date;
+    }
+
+    private void ApplyPin(string? sha, VisibleRow row, SubmoduleEntry module)
+    {
+        var map = PendingMap(Branch!);
+        if (sha is null)
         {
             map.Remove(row.Path);
         }
         else
         {
-            map[row.Path] = chosen;
+            map[row.Path] = sha;
         }
 
         var pending = map.TryGetValue(row.Path, out var staged) ? staged : null;
@@ -625,6 +1497,16 @@ public sealed class SessionController
                 .Select(pair => ModuleName(pair.Key) + " " + Sha.Short(pair.Value)));
         }
 
+        if (branch is not null && _stale.Contains(branch))
+        {
+            summary = branch + " ist auf dem Remote neuer. u holt den Stand. · " + summary;
+        }
+
+        if (_watchNote is not null)
+        {
+            summary = _watchNote + " · " + summary;
+        }
+
         if (!_source.Offline)
         {
             return summary;
@@ -643,6 +1525,12 @@ public sealed class SessionController
 
     private void ToggleFolder()
     {
+        if (Focus == FocusPane.Graph && Body == PreviewBody.Files)
+        {
+            ToggleFileFolder();
+            return;
+        }
+
         if (Focus != FocusPane.Tree || Selected is not { IsFolder: true } row)
         {
             return;
@@ -675,6 +1563,8 @@ public sealed class SessionController
             return;
         }
 
+        _loadFailed = true;
+
         Post(() =>
         {
             if (epoch != _epoch)
@@ -692,7 +1582,205 @@ public sealed class SessionController
     {
         _cancel.Cancel();
         _cancel = new CancellationTokenSource();
+        RestartFiles();
         return _cancel.Token;
+    }
+
+    private CancellationToken RestartFiles()
+    {
+        _filesCancel.Cancel();
+        _filesCancel = new CancellationTokenSource();
+        return _filesCancel.Token;
+    }
+
+    private void SetBody(PreviewBody body)
+    {
+        if (Body == body)
+        {
+            if (body == PreviewBody.Files && _filesKey is null)
+            {
+                RequestFiles();
+            }
+
+            return;
+        }
+
+        Body = body;
+        if (body == PreviewBody.Files)
+        {
+            RequestFiles();
+        }
+
+        Raise();
+    }
+
+    private void RequestFiles()
+    {
+        if (Body != PreviewBody.Files)
+        {
+            return;
+        }
+
+        _ = LoadFilesAsync(++_filesEpoch);
+    }
+
+    private void NoteGraphCleared(string message)
+    {
+        if (Body == PreviewBody.Files)
+        {
+            DropFiles(message);
+        }
+    }
+
+    private void DropFiles(string message)
+    {
+        _filesEpoch++;
+        _filesCancel.Cancel();
+        _filesKey = null;
+        _fileRoots = [];
+        _fileCollapsed.Clear();
+        Files = [];
+        FileIndex = 0;
+        FileMessage = message;
+    }
+
+    private async Task LoadFilesAsync(int epoch)
+    {
+        if (Body != PreviewBody.Files || epoch != _filesEpoch)
+        {
+            return;
+        }
+
+        if (!TryFileTarget(out var url, out var treeSha, out var key, out var idle))
+        {
+            Post(() =>
+            {
+                if (epoch != _filesEpoch)
+                {
+                    return;
+                }
+
+                DropFiles(idle);
+                Raise();
+            });
+            return;
+        }
+
+        if (key == _filesKey)
+        {
+            return;
+        }
+
+        var token = RestartFiles();
+        Post(() =>
+        {
+            if (epoch != _filesEpoch)
+            {
+                return;
+            }
+
+            FileMessage = "Lade Baum …";
+            Files = [];
+            Raise();
+        });
+
+        try
+        {
+            var snapshot = await _source.LoadFilesAsync(url, treeSha, token).ConfigureAwait(false);
+            if (epoch != _filesEpoch)
+            {
+                return;
+            }
+
+            Post(() =>
+            {
+                if (epoch != _filesEpoch)
+                {
+                    return;
+                }
+
+                _filesKey = key;
+                _fileRoots = snapshot.Roots.ToList();
+                _fileCollapsed.Clear();
+                foreach (var path in FileTree.DeeperFolders(_fileRoots))
+                {
+                    _fileCollapsed.Add(path);
+                }
+
+                FileIndex = 0;
+                Files = FileTree.Flatten(_fileRoots, _fileCollapsed);
+                FileMessage = snapshot.Message;
+                Raise();
+            });
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (UserFacingException ex)
+        {
+            Post(() =>
+            {
+                if (epoch != _filesEpoch)
+                {
+                    return;
+                }
+
+                DropFiles(ex.Message);
+                Raise();
+            });
+        }
+    }
+
+    private bool TryFileTarget(out string? url, out string treeSha, out string? key, out string idle)
+    {
+        url = null;
+        treeSha = "";
+        key = null;
+        idle = GraphMessage.Length == 0 ? "kein Commit" : GraphMessage;
+        if (Selected is not { IsFolder: false } row || !_modules.TryGetValue(row.Path, out var module))
+        {
+            idle = GraphMessage.Length == 0 ? "Ordner, kein Submodul." : GraphMessage;
+            return false;
+        }
+
+        if (GraphIndex < 0 || GraphIndex >= Graph.Count)
+        {
+            return false;
+        }
+
+        var commit = Graph[GraphIndex];
+        if (string.IsNullOrEmpty(commit.TreeSha))
+        {
+            idle = "Keine Tree-SHA für diesen Commit.";
+            return false;
+        }
+
+        url = module.Url;
+        treeSha = commit.TreeSha;
+        key = row.Path + "\n" + commit.TreeSha;
+        return true;
+    }
+
+    private void ToggleFileFolder()
+    {
+        if (FileIndex < 0 || FileIndex >= Files.Count || !Files[FileIndex].IsFolder)
+        {
+            return;
+        }
+
+        var path = Files[FileIndex].Path;
+        if (!_fileCollapsed.Add(path))
+        {
+            _fileCollapsed.Remove(path);
+        }
+
+        Files = FileTree.Flatten(_fileRoots, _fileCollapsed);
+        if (FileIndex >= Files.Count)
+        {
+            FileIndex = Math.Max(0, Files.Count - 1);
+        }
+
+        Raise();
     }
 
     private static List<SubmoduleEntry> Collect(IEnumerable<TreeNode> nodes)
@@ -755,4 +1843,8 @@ public sealed class SessionController
     }
 
     private void Raise() => Changed?.Invoke();
+
+    private sealed record LoadedGraph(GraphSnapshot Snapshot, PromotionState? Promotion);
+
+    private sealed record PromotionState(string? Note, IReadOnlyDictionary<string, string> Compared);
 }

@@ -15,7 +15,7 @@ Prüfschwerpunkt:
 - Keine Tokens, kein `GH_TOKEN`, kein `Authorization`-Header in Logs oder Fehlermeldungen.
 - Kein direkter Push auf Tab-Branches, kein Force-Push, kein Löschen von Branches, keine Ruleset-Änderung.
 - Ein PR je Tab und je Modul. Der Working Tree bleibt unangetastet (`GIT_INDEX_FILE`).
-- `production/*` ist schreibgeschützt, außer dem Promotion-PR.
+- `production/*` nimmt keine freien Pins, kein Hinzufügen und kein Entfernen an. Ein Pin-PR ist nur erlaubt, wenn die SHA schon auf dem passenden Staging-Branch lag und neuer als der Production-Pin ist.
 - Conventional Commits, kein `gb_*`-Scope, keine Odoo-Tags.
 
 Ausgabe: zuerst die blockierenden Punkte, danach Hinweise. Wenn nichts offen ist, ein Satz, dass der Diff die Regeln einhält.

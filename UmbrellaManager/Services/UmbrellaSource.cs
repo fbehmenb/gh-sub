@@ -10,6 +10,7 @@ public sealed class UmbrellaSource
     private readonly IExternalProcess _process;
     private readonly ResponseCache _cache;
     private readonly string _path;
+    private readonly SemaphoreSlim _remote = new(1, 1);
     private string? _origin;
     private bool _originLoaded;
 
@@ -22,20 +23,216 @@ public sealed class UmbrellaSource
 
     public bool Offline { get; private set; }
 
+    public IReadOnlyDictionary<string, string> BranchTips { get; private set; } = new Dictionary<string, string>(StringComparer.Ordinal);
+
     public void ClearCache()
     {
         _cache.Clear();
         Offline = false;
     }
 
-    public Task<IReadOnlyList<PinResult>> PublishPinsAsync(
+    public async Task<string?> ModuleVersionAsync(string? moduleUrl, string sha, CancellationToken cancellationToken)
+    {
+        var repo = GitHubRepo.FromUrl(moduleUrl);
+        if (repo is null)
+        {
+            return null;
+        }
+
+        var route = $"repos/{Escape(repo.Owner)}/{Escape(repo.Name)}/contents/__manifest__.py?ref={Escape(sha)}";
+        var result = await _process.RunAsync("gh", ["api", route], _path, cancellationToken).ConfigureAwait(false);
+        if (result.ExitCode == 0 && !string.IsNullOrWhiteSpace(result.StandardOutput))
+        {
+            _cache.Set(route, result.StandardOutput);
+            return GitHubParse.ParseManifestVersion(result.StandardOutput);
+        }
+
+        var raw = result.StandardOutput + "\n" + result.StandardError;
+        if (raw.Contains("404", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var message = GitHubText.Describe(result.StandardOutput, result.StandardError);
+        if (GitHubText.IsOffline(message) && _cache.TryGet(route, out var cached))
+        {
+            Offline = true;
+            return GitHubParse.ParseManifestVersion(cached);
+        }
+
+        throw new UserFacingException(message);
+    }
+
+    public async Task<IReadOnlyList<PinResult>> PublishPinsAsync(
         string tab,
         string loadedTip,
         IReadOnlyList<PinChange> changes,
         string titleTemplate,
+        CancellationToken cancellationToken,
+        Action<PushTick>? onProgress = null)
+    {
+        await _remote.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await new PinPublisher(_process, _path)
+                .PublishAsync(tab, loadedTip, changes, titleTemplate, cancellationToken, onProgress)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _remote.Release();
+        }
+    }
+
+    public async Task<IReadOnlyDictionary<string, string>?> ListRemoteHeadsAsync(CancellationToken cancellationToken)
+    {
+        await _remote.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var remote = await _process.RunAsync("git", ["ls-remote", "--heads", "origin"], _path, cancellationToken)
+                .ConfigureAwait(false);
+            if (remote.ExitCode != 0)
+            {
+                return null;
+            }
+
+            return BranchOrder.ParseRemoteTips(remote.StandardOutput);
+        }
+        finally
+        {
+            _remote.Release();
+        }
+    }
+
+    public async Task<string> FetchBranchTipAsync(string branch, CancellationToken cancellationToken)
+    {
+        await _remote.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var fetch = await _process.RunAsync(
+                "git",
+                ["fetch", "origin", "+refs/heads/" + branch + ":refs/remotes/origin/" + branch],
+                _path,
+                cancellationToken).ConfigureAwait(false);
+            if (fetch.ExitCode != 0)
+            {
+                throw new UserFacingException("Branch konnte nicht geholt werden. " + GitHubText.Redact(FirstLine(fetch.StandardError)));
+            }
+
+            var tip = await ReadTipAsync(branch, cancellationToken).ConfigureAwait(false);
+            if (tip is null)
+            {
+                throw new UserFacingException("Branch konnte nicht gelesen werden.");
+            }
+
+            return tip;
+        }
+        finally
+        {
+            _remote.Release();
+        }
+    }
+
+    public async Task<StagingPins> LoadStagingHistoryAsync(string stagingBranch, string path, CancellationToken cancellationToken)
+    {
+        var current = await ReadGitlinkAsync("origin/" + stagingBranch, path, cancellationToken).ConfigureAwait(false);
+        var log = await _process.RunAsync(
+            "git",
+            ["--no-pager", "-c", "core.quotepath=false", "log", "origin/" + stagingBranch, "--raw", "--no-abbrev", "--pretty=format:", "--", path],
+            _path,
+            cancellationToken).ConfigureAwait(false);
+        if (log.ExitCode != 0)
+        {
+            throw new UserFacingException("Staging-Pins konnten nicht gelesen werden. " + GitHubText.Redact(FirstLine(log.StandardError)));
+        }
+
+        var pins = StagingHistory.Parse(log.StandardOutput).ToList();
+        if (current is not null && pins.All(sha => !Sha.Same(sha, current)))
+        {
+            pins.Insert(0, current);
+        }
+
+        return new StagingPins(current, pins);
+    }
+
+    public async Task<IReadOnlyDictionary<string, string>> ComparePinsAsync(
+        SubmoduleEntry module,
+        string productionSha,
+        IReadOnlyList<string> candidates,
         CancellationToken cancellationToken)
     {
-        return new PinPublisher(_process, _path).PublishAsync(tab, loadedTip, changes, titleTemplate, cancellationToken);
+        var compared = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var repo = GitHubRepo.FromUrl(module.Url);
+        if (repo is null || candidates.Count == 0)
+        {
+            return compared;
+        }
+
+        using var gate = new SemaphoreSlim(4);
+        var tasks = candidates.Select(async sha =>
+        {
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var route = $"repos/{Escape(repo.Owner)}/{Escape(repo.Name)}/compare/{Escape(productionSha)}...{Escape(sha)}";
+                var status = GitHubParse.ParseCompareStatus(await ApiAsync(route, cancellationToken).ConfigureAwait(false));
+                if (string.IsNullOrEmpty(status))
+                {
+                    return;
+                }
+
+                lock (compared)
+                {
+                    compared[sha] = status;
+                }
+            }
+            finally
+            {
+                gate.Release();
+            }
+        });
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+        return compared;
+    }
+
+    public async Task<IReadOnlyList<CommitInfo>> LoadCommitsAsync(
+        SubmoduleEntry module,
+        IReadOnlyList<string> shas,
+        CancellationToken cancellationToken)
+    {
+        var repo = GitHubRepo.FromUrl(module.Url);
+        if (repo is null)
+        {
+            return [];
+        }
+
+        var commits = new List<CommitInfo>();
+        foreach (var sha in shas)
+        {
+            var commit = await CommitAsync(repo, sha, cancellationToken).ConfigureAwait(false);
+            if (commit is not null)
+            {
+                commits.Add(commit.Value);
+            }
+        }
+
+        return commits;
+    }
+
+    public async Task<string?> ReadGitlinkAsync(string commit, string path, CancellationToken cancellationToken)
+    {
+        var result = await _process.RunAsync(
+            "git",
+            ["rev-parse", "--verify", "--end-of-options", commit + ":" + path],
+            _path,
+            cancellationToken).ConfigureAwait(false);
+        if (result.ExitCode != 0)
+        {
+            return null;
+        }
+
+        var sha = result.StandardOutput.Trim();
+        return sha.Length == 40 ? sha : null;
     }
 
     public async Task<string?> ReadTipAsync(string branch, CancellationToken cancellationToken)
@@ -52,12 +249,23 @@ public sealed class UmbrellaSource
 
     public async Task<IReadOnlyList<string>> LoadBranchesAsync(string hidePattern, CancellationToken cancellationToken)
     {
-        var fetch = await _process.RunAsync(
-            "git",
-            ["fetch", "origin", "+refs/heads/*:refs/remotes/origin/*"],
-            _path,
-            cancellationToken).ConfigureAwait(false);
-        var remote = await _process.RunAsync("git", ["ls-remote", "--heads", "origin"], _path, cancellationToken).ConfigureAwait(false);
+        await _remote.WaitAsync(cancellationToken).ConfigureAwait(false);
+        ProcessResult fetch;
+        ProcessResult remote;
+        try
+        {
+            fetch = await _process.RunAsync(
+                "git",
+                ["fetch", "origin", "+refs/heads/*:refs/remotes/origin/*"],
+                _path,
+                cancellationToken).ConfigureAwait(false);
+            remote = await _process.RunAsync("git", ["ls-remote", "--heads", "origin"], _path, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _remote.Release();
+        }
+
         if (remote.ExitCode == 0)
         {
             if (fetch.ExitCode != 0)
@@ -65,8 +273,10 @@ public sealed class UmbrellaSource
                 Offline = true;
             }
 
-            return await WithGitmodulesAsync(BranchOrder.Apply(BranchOrder.ParseRemoteHeads(remote.StandardOutput), hidePattern), cancellationToken)
+            var names = await WithGitmodulesAsync(BranchOrder.Apply(BranchOrder.ParseRemoteHeads(remote.StandardOutput), hidePattern), cancellationToken)
                 .ConfigureAwait(false);
+            BranchTips = await TipsForAsync(names, BranchOrder.ParseRemoteTips(remote.StandardOutput), cancellationToken).ConfigureAwait(false);
+            return names;
         }
 
         var local = await _process.RunAsync("git", ["branch", "-r", "--format=%(refname:short)"], _path, cancellationToken).ConfigureAwait(false);
@@ -76,8 +286,34 @@ public sealed class UmbrellaSource
         }
 
         Offline = true;
-        return await WithGitmodulesAsync(BranchOrder.Apply(BranchOrder.ParseLocalRemoteBranches(local.StandardOutput), hidePattern), cancellationToken)
+        var fallback = await WithGitmodulesAsync(BranchOrder.Apply(BranchOrder.ParseLocalRemoteBranches(local.StandardOutput), hidePattern), cancellationToken)
             .ConfigureAwait(false);
+        BranchTips = await TipsForAsync(fallback, new Dictionary<string, string>(StringComparer.Ordinal), cancellationToken).ConfigureAwait(false);
+        return fallback;
+    }
+
+    private async Task<IReadOnlyDictionary<string, string>> TipsForAsync(
+        IReadOnlyList<string> branches,
+        IReadOnlyDictionary<string, string> advertised,
+        CancellationToken cancellationToken)
+    {
+        var tips = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var branch in branches)
+        {
+            if (advertised.TryGetValue(branch, out var sha))
+            {
+                tips[branch] = sha;
+                continue;
+            }
+
+            var parsed = await ReadTipAsync(branch, cancellationToken).ConfigureAwait(false);
+            if (parsed is not null)
+            {
+                tips[branch] = parsed;
+            }
+        }
+
+        return tips;
     }
 
     private async Task<IReadOnlyList<string>> WithGitmodulesAsync(IReadOnlyList<string> branches, CancellationToken cancellationToken)
@@ -148,7 +384,11 @@ public sealed class UmbrellaSource
         return _origin;
     }
 
-    public async Task<GraphSnapshot> LoadGraphAsync(SubmoduleEntry module, CancellationToken cancellationToken, string? pendingSha = null)
+    public async Task<GraphSnapshot> LoadGraphAsync(
+        SubmoduleEntry module,
+        CancellationToken cancellationToken,
+        string? pendingSha = null,
+        string? includeSha = null)
     {
         var repo = GitHubRepo.FromUrl(module.Url);
         if (repo is null)
@@ -201,20 +441,32 @@ public sealed class UmbrellaSource
             extraCommits.Add((lane.Name, await CommitsAsync(repo, lane.Name, cancellationToken).ConfigureAwait(false)));
         }
 
-        if (module.Sha is not null && !Listed(standardCommits, extraCommits, module.Sha))
-        {
-            var pin = await CommitAsync(repo, module.Sha, cancellationToken).ConfigureAwait(false);
-            if (pin is not null)
-            {
-                standardCommits = [..standardCommits, pin.Value];
-            }
-        }
+        standardCommits = await WithListedCommitAsync(repo, standardCommits, extraCommits, module.Sha, cancellationToken)
+            .ConfigureAwait(false);
+        standardCommits = await WithListedCommitAsync(repo, standardCommits, extraCommits, includeSha, cancellationToken)
+            .ConfigureAwait(false);
 
         var lanes = new List<string> { standardName };
         lanes.AddRange(extra.Select(lane => lane.Name));
         var rows = GraphBuilder.Build(standardName, standardCommits, extraCommits, module.Sha, pendingSha);
         var message = extra.Count == GraphBuilder.MaxExtraLanes ? "Weitere Branches sind nicht als Spuren gezeigt." : "";
         return new GraphSnapshot(lanes, rows, message);
+    }
+
+    public async Task<FileSnapshot> LoadFilesAsync(string? moduleUrl, string treeSha, CancellationToken cancellationToken)
+    {
+        var repo = GitHubRepo.FromUrl(moduleUrl);
+        if (repo is null)
+        {
+            return new FileSnapshot([], moduleUrl is null
+                ? "Keine GitHub-URL in .gitmodules."
+                : "Nur GitHub-URLs werden gelesen.");
+        }
+
+        var route = $"repos/{Escape(repo.Owner)}/{Escape(repo.Name)}/git/trees/{Escape(treeSha)}?recursive=1";
+        var parsed = FileTree.Parse(await ApiAsync(route, cancellationToken).ConfigureAwait(false));
+        var message = parsed.Truncated ? "GitHub hat den Baum abgeschnitten." : "";
+        return new FileSnapshot(parsed.Roots, message);
     }
 
     public async Task<IReadOnlyDictionary<string, string>> LoadPinMarksAsync(
@@ -338,6 +590,22 @@ public sealed class UmbrellaSource
     {
         var flags = marked.ToDictionary(tip => tip.Name, tip => tip.PinIsOnBranch, StringComparer.Ordinal);
         return tips.Select(tip => flags.TryGetValue(tip.Name, out var onBranch) ? tip with { PinIsOnBranch = onBranch } : tip).ToList();
+    }
+
+    private async Task<IReadOnlyList<CommitInfo>> WithListedCommitAsync(
+        GitHubRepo repo,
+        IReadOnlyList<CommitInfo> standard,
+        IReadOnlyList<(string Name, IReadOnlyList<CommitInfo> Commits)> extra,
+        string? sha,
+        CancellationToken cancellationToken)
+    {
+        if (sha is null || Listed(standard, extra, sha))
+        {
+            return standard;
+        }
+
+        var commit = await CommitAsync(repo, sha, cancellationToken).ConfigureAwait(false);
+        return commit is null ? standard : [..standard, commit.Value];
     }
 
     private static bool Listed(

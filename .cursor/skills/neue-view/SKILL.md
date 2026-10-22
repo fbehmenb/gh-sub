@@ -12,7 +12,7 @@ Eine Terminal.Gui-v2-View anlegen, die Zustand nur anzeigt. Tasten bleiben an ei
 ## Schritte
 
 1. View unter `UmbrellaManager/Views/` anlegen. Kein statischer Zustand, keine `git`- oder `gh`-Aufrufe in der View.
-2. Neue Taste nur in der zentralen Belegung eintragen, nicht als eigenen Handler in der View. Bestehende Tasten nicht doppelt belegen: `←`/`→`, `Tab`, `↑`/`↓`, Leertaste, Enter, `a`, Entf, `c`, `r`, `q`.
+2. Neue Taste nur in der zentralen Belegung eintragen, nicht als eigenen Handler in der View. Bestehende Tasten nicht doppelt belegen: `←`/`→`, `Tab`, `Umschalt+Tab`, `↑`/`↓`, Leertaste, Enter, `a`, Entf, `c`, `r`, `q`.
 3. Die View aus dem vorhandenen Modell füllen. Production-Tabs bleiben schreibgeschützt.
 4. Einen Test anlegen, der die Belegung oder den angezeigten Zustand prüft, ohne die Konsole zu öffnen.
 

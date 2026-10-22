@@ -1,4 +1,9 @@
+using System.Text;
+using System.Text.Json;
+
+using Terminal.Gui.Input;
 using UmbrellaManager.Input;
+using UmbrellaManager.Services;
 using UmbrellaManager.Model;
 using UmbrellaManager.Parsing;
 
@@ -25,6 +30,27 @@ public class ReadingTests
             "chore/pin-*");
 
         Assert.Equal(["dev/18.0", "dev/19.0", "staging/19.0", "production/19.0", "topic/x"], ordered);
+        Assert.Equal("staging/19.0", BranchOrder.StagingPartner("production/19.0"));
+        Assert.Null(BranchOrder.StagingPartner("dev/19.0"));
+        Assert.Null(BranchOrder.StagingPartner("production/"));
+    }
+
+    [Fact]
+    public void Staging_history_keeps_gitlinks_and_only_ahead_pins_are_promotable()
+    {
+        var older = new string('c', 40);
+        var staging = new string('b', 40);
+        var zeros = new string('0', 40);
+        var raw = $":160000 160000 {zeros} {older} A\tgb_a\n\n:160000 160000 {older} {staging} M\tgb_a\n";
+
+        var pins = StagingHistory.Parse(raw);
+
+        Assert.Equal([older, staging], pins);
+        Assert.True(StagingHistory.IsPromotable(true, "ahead"));
+        Assert.False(StagingHistory.IsPromotable(true, "identical"));
+        Assert.False(StagingHistory.IsPromotable(true, "behind"));
+        Assert.False(StagingHistory.IsPromotable(true, "diverged"));
+        Assert.False(StagingHistory.IsPromotable(false, "ahead"));
     }
 
     [Fact]
@@ -75,7 +101,11 @@ public class ReadingTests
         var collapsed = new HashSet<string>(StringComparer.Ordinal) { "gb_modules" };
         var rows = SubmoduleTree.Flatten(roots, collapsed);
         Assert.DoesNotContain(rows, row => row.Name == "gb_a");
-        Assert.Contains(rows, row => row.Name == "gb_modules" && !row.Expanded);
+        Assert.Contains(rows, row => row.Name == "gb_modules" && !row.Expanded && row.Branch is null);
+
+        var open = SubmoduleTree.Flatten(roots, new HashSet<string>(StringComparer.Ordinal));
+        Assert.Contains(open, row => row.Name == "gb_a" && row.Branch == "19.0" && row.Sha == Pin);
+        Assert.Contains(open, row => row.Name == "ratocon_x" && row.Branch is null);
     }
 
     [Fact]
@@ -101,6 +131,22 @@ public class ReadingTests
         Assert.Equal(CommitTone.Gray, rows.Single(row => row.Sha == Other).Tone);
         Assert.True(rows.Single(row => row.Sha == Pin).Dots[0]);
         Assert.False(rows.Single(row => row.Sha == Pin).Dots[1]);
+
+        var marked = GraphBuilder.MarkPromotion(
+            rows,
+            Pin,
+            Other,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { Other });
+        Assert.Equal(PinMark.Production, marked.Single(row => row.Sha == Pin).Mark);
+        Assert.Equal(PinMark.Staging, marked.Single(row => row.Sha == Other).Mark);
+        Assert.True(marked.Single(row => row.Sha == Other).Promotable);
+        Assert.False(marked.Single(row => row.Sha == Pin).Promotable);
+        Assert.False(marked.Single(row => row.Sha == Feature).Promotable);
+        Assert.Equal("production = staging", GraphBuilder.Badge(PinMark.Both));
+
+        var same = GraphBuilder.MarkPromotion(rows, Pin, Pin, new HashSet<string>(StringComparer.OrdinalIgnoreCase) { Pin });
+        Assert.Equal(PinMark.Both, same.Single(row => row.Sha == Pin).Mark);
+        Assert.False(same.Single(row => row.Sha == Pin).Promotable);
     }
 
     [Fact]
@@ -136,8 +182,211 @@ public class ReadingTests
         var keys = KeyMap.Bindings.Select(binding => binding.Key).ToArray();
         Assert.Equal(keys.Length, keys.Distinct().Count());
         Assert.Equal(
-            ["Left", "Right", "Tab", "Up", "Down", "Space", "Enter", "A", "Delete", "C", "J", "N", "R", "Q"],
+            ["Shift+Tab", "Tab", "Left", "Right", "[", "]", "Up", "Down", "Space", "Enter", "A", "Delete", "C", "P", "J", "N", "S", "U", "R", "Q", "?"],
             keys);
         Assert.Equal(keys.Length, KeyMap.Bindings.Select(binding => binding.Command).Distinct().Count());
+        Assert.Equal(AppCommand.NextBranch, KeyMap.Match(Key.Tab));
+        Assert.Equal(AppCommand.PreviousBranch, KeyMap.Match(Key.Tab.WithShift));
+        Assert.Equal(AppCommand.FocusTree, KeyMap.Match(Key.CursorLeft));
+        Assert.Equal(AppCommand.FocusGraph, KeyMap.Match(Key.CursorRight));
+        Assert.Equal(AppCommand.PreviousBody, KeyMap.Match(new Key('[')));
+        Assert.Equal(AppCommand.NextBody, KeyMap.Match(new Key(']')));
+    }
+
+    [Fact]
+    public void Help_explains_every_key()
+    {
+        var help = string.Join('\n', KeyMap.Help);
+        foreach (var phrase in new[] { "Submodule", "Commits", "bewegen", "Ordner", "Pin vormerken", "hinzufügen", "Entf", "PR", "pushen", "abbrechen", "Stand holen", "Einrichtung", "neu laden", "beenden", "?" })
+        {
+            Assert.Contains(phrase, help);
+        }
+
+        Assert.Contains("nächster Tab", help);
+        Assert.Contains("vorheriger Tab", help);
+        Assert.Contains("Commits oder Baum", help);
+        Assert.Equal(1, KeyMap.FooterHeight);
+        Assert.Equal("? Hilfe", KeyMap.HelpHint);
+    }
+
+    [Fact]
+    public void Active_row_explains_enter_and_push()
+    {
+        var commit = RowHint.Describe(new RowHintInput(
+            false, false, false, false, false, FocusPane.Graph, false, true, false, true, CommitTone.Gray, false, false));
+        Assert.Contains("Enter diesen Commit vormerken", commit);
+        Assert.DoesNotContain("p PR", commit);
+
+        var staged = RowHint.Describe(new RowHintInput(
+            false, false, false, false, false, FocusPane.Graph, false, true, false, true, CommitTone.LightGreen, true, true));
+        Assert.Contains("Entf Vormerkung entfernen", staged);
+        Assert.Contains("p PR vorbereiten", staged);
+
+        var current = RowHint.Describe(new RowHintInput(
+            false, false, false, false, false, FocusPane.Graph, false, true, false, true, CommitTone.DarkGreen, true, true));
+        Assert.Contains("Entf Vormerkung entfernen", current);
+
+        var newer = RowHint.Describe(new RowHintInput(
+            false, false, false, false, false, FocusPane.Graph, false, true, false, true, CommitTone.Gray, false, false, false, true));
+        Assert.Contains("c diesen neueren Commit wählen", newer);
+
+        var folder = RowHint.Describe(new RowHintInput(
+            false, false, false, false, false, FocusPane.Tree, true, false, false, false, CommitTone.Gray, false, false));
+        Assert.Contains("Leertaste Ordner", folder);
+        Assert.Contains("→ zu den Commits", folder);
+
+        var production = RowHint.Describe(new RowHintInput(
+            false, false, false, false, true, FocusPane.Graph, false, true, false, true, CommitTone.Gray, false, false));
+        Assert.Contains("Enter auf den Staging-Pin", production);
+
+        var promotable = RowHint.Describe(new RowHintInput(
+            false, false, false, false, true, FocusPane.Graph, false, true, false, true, CommitTone.Gray, false, true, false, false, false, true));
+        Assert.Contains("Enter diesen Staging-Pin vormerken", promotable);
+        Assert.Contains("p PR vorbereiten", promotable);
+
+        var asking = RowHint.Describe(new RowHintInput(
+            false, false, false, true, false, FocusPane.Graph, false, true, false, true, CommitTone.Gray, true, true));
+        Assert.Contains("j diese Änderungen pushen", asking);
+        Assert.Contains("n abbrechen", asking);
+
+        var lines = PinPublisher.PlanLines(
+            "dev/19.0",
+            [
+                new PinChange("gb_a", "gb_a", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "19.0", null, "19.0.1.0.1"),
+                new PinChange("gb_modules/gb_b", "gb_b", "cccccccccccccccccccccccccccccccccccccccc", "dddddddddddddddddddddddddddddddddddddddd", "19.0", null),
+            ],
+            [],
+            false,
+            "chore(<modul>): pin");
+        Assert.Contains(lines, line => line.Contains("gb_a", StringComparison.Ordinal) && line.Contains("aaaaaaa → bbbbbbb", StringComparison.Ordinal));
+        Assert.Contains(lines, line => line.Contains("gb_b", StringComparison.Ordinal) && line.Contains("ccccccc → ddddddd", StringComparison.Ordinal));
+        Assert.Contains(lines, line => line.Contains("chore(gb_a): pin", StringComparison.Ordinal));
+        Assert.Contains(lines, line => line.Contains("nach dev/19.0 über chore/pin-gb_b-", StringComparison.Ordinal));
+        Assert.Contains(lines, line => line.Contains("j pushen", StringComparison.Ordinal) && line.Contains("n abbrechen", StringComparison.Ordinal));
+        Assert.Equal("░░░░░░ 0/2", PinPublisher.ProgressBar(0, 2, 10));
+        Assert.Equal("███░░░ 1/2", PinPublisher.ProgressBar(1, 2, 10));
+        Assert.Equal("██████ 2/2", PinPublisher.ProgressBar(2, 2, 10));
+        Assert.True(PinPublisher.IsConflicting("{\"mergeable\":\"CONFLICTING\"}"));
+        Assert.False(PinPublisher.IsConflicting("{\"mergeable\":\"MERGEABLE\"}"));
+        Assert.Equal(
+            "Jetzt: nur n abbrechen",
+            RowHint.Describe(new RowHintInput(false, false, true, false, false, FocusPane.Graph, false, true, false, true, CommitTone.Gray, true, true, true)));
+    }
+
+    [Fact]
+    public void Manifest_version_is_read_from_the_github_contents_payload()
+    {
+        const string manifest = """
+            {
+                'name': 'Documents Archive',
+                'version': '19.0.1.8.14',
+            }
+            """;
+        var encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(manifest));
+        var wrapped = encoded[..20] + "\n" + encoded[20..];
+        var json = JsonSerializer.Serialize(new Dictionary<string, string>
+        {
+            ["encoding"] = "base64",
+            ["content"] = wrapped,
+        });
+
+        Assert.Equal("19.0.1.8.14", GitHubParse.ParseManifestVersion(json));
+        Assert.Null(GitHubParse.ManifestVersion("{'name': 'ohne version'}"));
+    }
+
+    [Fact]
+    public void Remote_tips_mark_a_moved_branch_and_keep_a_pending_base()
+    {
+        const string oldTip = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const string newTip = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        const string other = "cccccccccccccccccccccccccccccccccccccccc";
+        var text = oldTip + "\trefs/heads/dev/19.0\n" + other + "\trefs/heads/chore/pin-x-aaaaaaa-dev/19.0\n" + newTip + "\trefs/heads/topic/x\n";
+        var tips = BranchOrder.ParseRemoteTips(text);
+        Assert.Equal(oldTip, tips["dev/19.0"]);
+        Assert.Equal(["dev/19.0"], RemoteWatch.Stale(new Dictionary<string, string> { ["dev/19.0"] = newTip }, tips));
+        Assert.Equal(["topic/x"], RemoteWatch.Unlisted(["dev/19.0"], tips.Keys, "chore/pin-*"));
+        Assert.Equal(
+            ["gb_a"],
+            PendingBase.Moved(
+                new Dictionary<string, string> { ["gb_modules/gb_a"] = other },
+                new Dictionary<string, string?> { ["gb_modules/gb_a"] = oldTip },
+                new Dictionary<string, string?> { ["gb_modules/gb_a"] = newTip }));
+        Assert.Empty(PendingBase.Moved(
+            new Dictionary<string, string> { ["gb_a"] = other },
+            new Dictionary<string, string?> { ["gb_a"] = oldTip },
+            new Dictionary<string, string?> { ["gb_a"] = oldTip }));
+        Assert.False(PinPublisher.GitlinkConflicts(oldTip, oldTip));
+        Assert.True(PinPublisher.GitlinkConflicts(oldTip, newTip));
+        Assert.Contains("setzt auf dem neuen Stand auf", PinPublisher.PushPreview("dev/19.0", [], ["gb_a"], true, "titel"));
+    }
+
+    [Fact]
+    public void File_tree_nests_paths_and_keeps_the_commit_tree_sha()
+    {
+        const string commits = """
+            [{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parents":[{"sha":"cccccccccccccccccccccccccccccccccccccccc"}],"commit":{"message":"betreff\nrest","committer":{"date":"2026-10-01T00:00:00Z"},"tree":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}]
+            """;
+        var commit = Assert.Single(GitHubParse.ParseCommits(commits));
+        Assert.Equal("betreff", commit.Subject);
+        Assert.Equal("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", commit.TreeSha);
+        Assert.Equal(["cccccccccccccccccccccccccccccccccccccccc"], commit.Parents);
+
+        const string json = """
+            {
+              "truncated": true,
+              "tree": [
+                {"path": "models", "type": "tree"},
+                {"path": "models/foo.py", "type": "blob"},
+                {"path": "models/bar", "type": "tree"},
+                {"path": "models/bar/x.py", "type": "blob"},
+                {"path": "README.md", "type": "blob"},
+                {"path": "nested", "type": "commit"}
+              ]
+            }
+            """;
+        var parsed = FileTree.Parse(json);
+        Assert.True(parsed.Truncated);
+        var collapsed = FileTree.DeeperFolders(parsed.Roots);
+        var rows = FileTree.Flatten(parsed.Roots, collapsed);
+        Assert.Contains(rows, row => row.Name == "models" && row.IsFolder && row.Expanded);
+        Assert.Contains(rows, row => row.Name == "foo.py" && !row.IsFolder);
+        Assert.Contains(rows, row => row.Name == "bar" && row.IsFolder && !row.Expanded);
+        Assert.DoesNotContain(rows, row => row.Name == "x.py");
+        Assert.Contains(rows, row => row.Name == "README.md");
+        Assert.Contains(rows, row => row.Name == "nested" && !row.IsFolder);
+
+        collapsed.Remove("models/bar");
+        var open = FileTree.Flatten(parsed.Roots, collapsed);
+        Assert.Contains(open, row => row.Name == "x.py");
+    }
+
+    [Fact]
+    public void Commit_graph_connects_a_merge_and_names_the_branch_tip()
+    {
+        var day = new DateTimeOffset(2026, 10, 1, 0, 0, 0, TimeSpan.Zero);
+        const string tip = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const string merge = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        const string left = "cccccccccccccccccccccccccccccccccccccccc";
+        const string right = "dddddddddddddddddddddddddddddddddddddddd";
+        const string root = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        var standard = new[]
+        {
+            new CommitInfo(tip, "A", day.AddDays(4), Parents: [merge]),
+            new CommitInfo(merge, "B", day.AddDays(3), Parents: [left, right]),
+            new CommitInfo(left, "C", day.AddDays(2), Parents: [root]),
+            new CommitInfo(root, "E", day, Parents: []),
+        };
+        var extra = new[]
+        {
+            ("feature", (IReadOnlyList<CommitInfo>)[new CommitInfo(right, "D", day.AddDays(1), Parents: [root])]),
+        };
+
+        var rows = GraphBuilder.Build("19.0", standard, extra, pinSha: null, pendingSha: null);
+        Assert.Equal(["19.0"], rows[0].Names);
+        Assert.Contains(rows, row => row.Sha == right && row.Names!.Contains("feature"));
+        Assert.Equal('*', rows[0].Cells![0].Symbol);
+        Assert.Contains(rows, row => row.Cells!.Any(cell => cell.Symbol is '/' or '\\'));
+        var glyphs = string.Concat(rows.Single(row => row.Sha == merge).Cells!.Select(cell => cell.Symbol));
+        Assert.Contains("\\", glyphs);
     }
 }

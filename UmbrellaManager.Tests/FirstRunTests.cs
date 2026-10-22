@@ -172,6 +172,26 @@ public class FirstRunTests
         Assert.Contains("Abbruch", output.ToString());
     }
 
+    [Fact]
+    public void Missing_poll_interval_stays_at_two_minutes()
+    {
+        var file = Path.Combine(Temp(), "setup.json");
+        File.WriteAllText(file, """
+            {
+              "repositoryUrl": "https://github.com/Org/odoo_umbrella",
+              "localPath": "C:\\repo"
+            }
+            """);
+
+        var setup = UserSetup.Load(file, out var warning);
+
+        Assert.Null(warning);
+        Assert.Null(setup!.PollIntervalSeconds);
+        Assert.Equal(120, setup.EffectivePollSeconds);
+        Assert.Equal(120, UserSetup.Normalize(45));
+        Assert.Equal(0, UserSetup.Normalize(0));
+    }
+
     private static string Temp()
     {
         var path = Path.Combine(Path.GetTempPath(), "umbrella-manager-local-tests", Guid.NewGuid().ToString("N"));
