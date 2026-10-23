@@ -29,8 +29,6 @@ public enum AppCommand
     ShowHelp,
     OpenSetup,
     UpdateBranch,
-    PreviousBody,
-    NextBody,
 }
 
 public enum NoticeTone
@@ -45,12 +43,6 @@ public enum FocusPane
 {
     Tree,
     Graph,
-}
-
-public enum PreviewBody
-{
-    Commits,
-    Files,
 }
 
 public sealed class SessionController
@@ -78,11 +70,6 @@ public sealed class SessionController
     private string? _setupFile;
     private string? _watchNote;
     private readonly HashSet<string> _stale = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _fileCollapsed = new(StringComparer.Ordinal);
-    private List<FileNode> _fileRoots = [];
-    private string? _filesKey;
-    private int _filesEpoch;
-    private CancellationTokenSource _filesCancel = new();
     private CancellationTokenSource? _pollCancel;
     private List<PinChange>? _proposal;
     private List<PinChange> _pushChanges = [];
@@ -123,14 +110,6 @@ public sealed class SessionController
     public IReadOnlyList<GraphRow> Graph { get; private set; } = [];
 
     public string GraphMessage { get; private set; } = "";
-
-    public PreviewBody Body { get; private set; } = PreviewBody.Commits;
-
-    public IReadOnlyList<FileRow> Files { get; private set; } = [];
-
-    public int FileIndex { get; private set; }
-
-    public string FileMessage { get; private set; } = "";
 
     public string Message { get; private set; } = "keine vorgemerkten Änderungen";
 
@@ -286,12 +265,6 @@ public sealed class SessionController
             case AppCommand.FocusGraph:
                 Focus = FocusPane.Graph;
                 Raise();
-                break;
-            case AppCommand.PreviousBody:
-                SetBody(PreviewBody.Commits);
-                break;
-            case AppCommand.NextBody:
-                SetBody(PreviewBody.Files);
                 break;
             case AppCommand.MoveUp:
                 Move(-1);
@@ -699,7 +672,6 @@ public sealed class SessionController
                 Lanes = [];
                 GraphMessage = selected?.IsFolder == true ? "Ordner, kein Submodul." : "Lade Commits …";
                 RememberPromotion(null);
-                NoteGraphCleared(GraphMessage);
                 PinMarks = new Dictionary<string, string>();
                 Message = Status(branch);
                 Raise();
@@ -761,11 +733,6 @@ public sealed class SessionController
                 GraphMessage = loaded.Snapshot.Message;
                 RememberPromotion(loaded.Promotion);
                 Message = Status(branch);
-                if (Body == PreviewBody.Files)
-                {
-                    RequestFiles();
-                }
-
                 Raise();
             });
         }
@@ -782,18 +749,6 @@ public sealed class SessionController
     {
         if (Focus == FocusPane.Graph)
         {
-            if (Body == PreviewBody.Files)
-            {
-                if (Files.Count == 0)
-                {
-                    return;
-                }
-
-                FileIndex = Math.Clamp(FileIndex + delta, 0, Files.Count - 1);
-                Raise();
-                return;
-            }
-
             if (Graph.Count == 0)
             {
                 return;
@@ -826,7 +781,6 @@ public sealed class SessionController
             Graph = [];
             GraphMessage = "Lade Commits …";
             RememberPromotion(null);
-            NoteGraphCleared(GraphMessage);
             Raise();
         });
         var token = Restart();
@@ -859,11 +813,6 @@ public sealed class SessionController
                 GraphMessage = loaded.Snapshot.Message;
                 RememberPromotion(loaded.Promotion);
                 Message = Status(Branch);
-                if (Body == PreviewBody.Files)
-                {
-                    RequestFiles();
-                }
-
                 Raise();
             });
         }
@@ -1266,7 +1215,6 @@ public sealed class SessionController
         }
 
         var onCommit = Focus == FocusPane.Graph
-            && Body == PreviewBody.Commits
             && GraphIndex >= 0
             && GraphIndex < Graph.Count;
         if (onCommit && Graph[GraphIndex].Promotable)
@@ -1282,11 +1230,6 @@ public sealed class SessionController
 
     private void JumpToStaging(VisibleRow row, SubmoduleEntry module)
     {
-        if (Body != PreviewBody.Commits)
-        {
-            Body = PreviewBody.Commits;
-        }
-
         var index = -1;
         for (var i = 0; i < Graph.Count; i++)
         {
@@ -1525,12 +1468,6 @@ public sealed class SessionController
 
     private void ToggleFolder()
     {
-        if (Focus == FocusPane.Graph && Body == PreviewBody.Files)
-        {
-            ToggleFileFolder();
-            return;
-        }
-
         if (Focus != FocusPane.Tree || Selected is not { IsFolder: true } row)
         {
             return;
@@ -1582,205 +1519,7 @@ public sealed class SessionController
     {
         _cancel.Cancel();
         _cancel = new CancellationTokenSource();
-        RestartFiles();
         return _cancel.Token;
-    }
-
-    private CancellationToken RestartFiles()
-    {
-        _filesCancel.Cancel();
-        _filesCancel = new CancellationTokenSource();
-        return _filesCancel.Token;
-    }
-
-    private void SetBody(PreviewBody body)
-    {
-        if (Body == body)
-        {
-            if (body == PreviewBody.Files && _filesKey is null)
-            {
-                RequestFiles();
-            }
-
-            return;
-        }
-
-        Body = body;
-        if (body == PreviewBody.Files)
-        {
-            RequestFiles();
-        }
-
-        Raise();
-    }
-
-    private void RequestFiles()
-    {
-        if (Body != PreviewBody.Files)
-        {
-            return;
-        }
-
-        _ = LoadFilesAsync(++_filesEpoch);
-    }
-
-    private void NoteGraphCleared(string message)
-    {
-        if (Body == PreviewBody.Files)
-        {
-            DropFiles(message);
-        }
-    }
-
-    private void DropFiles(string message)
-    {
-        _filesEpoch++;
-        _filesCancel.Cancel();
-        _filesKey = null;
-        _fileRoots = [];
-        _fileCollapsed.Clear();
-        Files = [];
-        FileIndex = 0;
-        FileMessage = message;
-    }
-
-    private async Task LoadFilesAsync(int epoch)
-    {
-        if (Body != PreviewBody.Files || epoch != _filesEpoch)
-        {
-            return;
-        }
-
-        if (!TryFileTarget(out var url, out var treeSha, out var key, out var idle))
-        {
-            Post(() =>
-            {
-                if (epoch != _filesEpoch)
-                {
-                    return;
-                }
-
-                DropFiles(idle);
-                Raise();
-            });
-            return;
-        }
-
-        if (key == _filesKey)
-        {
-            return;
-        }
-
-        var token = RestartFiles();
-        Post(() =>
-        {
-            if (epoch != _filesEpoch)
-            {
-                return;
-            }
-
-            FileMessage = "Lade Baum …";
-            Files = [];
-            Raise();
-        });
-
-        try
-        {
-            var snapshot = await _source.LoadFilesAsync(url, treeSha, token).ConfigureAwait(false);
-            if (epoch != _filesEpoch)
-            {
-                return;
-            }
-
-            Post(() =>
-            {
-                if (epoch != _filesEpoch)
-                {
-                    return;
-                }
-
-                _filesKey = key;
-                _fileRoots = snapshot.Roots.ToList();
-                _fileCollapsed.Clear();
-                foreach (var path in FileTree.DeeperFolders(_fileRoots))
-                {
-                    _fileCollapsed.Add(path);
-                }
-
-                FileIndex = 0;
-                Files = FileTree.Flatten(_fileRoots, _fileCollapsed);
-                FileMessage = snapshot.Message;
-                Raise();
-            });
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (UserFacingException ex)
-        {
-            Post(() =>
-            {
-                if (epoch != _filesEpoch)
-                {
-                    return;
-                }
-
-                DropFiles(ex.Message);
-                Raise();
-            });
-        }
-    }
-
-    private bool TryFileTarget(out string? url, out string treeSha, out string? key, out string idle)
-    {
-        url = null;
-        treeSha = "";
-        key = null;
-        idle = GraphMessage.Length == 0 ? "kein Commit" : GraphMessage;
-        if (Selected is not { IsFolder: false } row || !_modules.TryGetValue(row.Path, out var module))
-        {
-            idle = GraphMessage.Length == 0 ? "Ordner, kein Submodul." : GraphMessage;
-            return false;
-        }
-
-        if (GraphIndex < 0 || GraphIndex >= Graph.Count)
-        {
-            return false;
-        }
-
-        var commit = Graph[GraphIndex];
-        if (string.IsNullOrEmpty(commit.TreeSha))
-        {
-            idle = "Keine Tree-SHA für diesen Commit.";
-            return false;
-        }
-
-        url = module.Url;
-        treeSha = commit.TreeSha;
-        key = row.Path + "\n" + commit.TreeSha;
-        return true;
-    }
-
-    private void ToggleFileFolder()
-    {
-        if (FileIndex < 0 || FileIndex >= Files.Count || !Files[FileIndex].IsFolder)
-        {
-            return;
-        }
-
-        var path = Files[FileIndex].Path;
-        if (!_fileCollapsed.Add(path))
-        {
-            _fileCollapsed.Remove(path);
-        }
-
-        Files = FileTree.Flatten(_fileRoots, _fileCollapsed);
-        if (FileIndex >= Files.Count)
-        {
-            FileIndex = Math.Max(0, Files.Count - 1);
-        }
-
-        Raise();
     }
 
     private static List<SubmoduleEntry> Collect(IEnumerable<TreeNode> nodes)

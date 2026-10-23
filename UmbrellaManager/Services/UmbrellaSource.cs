@@ -453,22 +453,6 @@ public sealed class UmbrellaSource
         return new GraphSnapshot(lanes, rows, message);
     }
 
-    public async Task<FileSnapshot> LoadFilesAsync(string? moduleUrl, string treeSha, CancellationToken cancellationToken)
-    {
-        var repo = GitHubRepo.FromUrl(moduleUrl);
-        if (repo is null)
-        {
-            return new FileSnapshot([], moduleUrl is null
-                ? "Keine GitHub-URL in .gitmodules."
-                : "Nur GitHub-URLs werden gelesen.");
-        }
-
-        var route = $"repos/{Escape(repo.Owner)}/{Escape(repo.Name)}/git/trees/{Escape(treeSha)}?recursive=1";
-        var parsed = FileTree.Parse(await ApiAsync(route, cancellationToken).ConfigureAwait(false));
-        var message = parsed.Truncated ? "GitHub hat den Baum abgeschnitten." : "";
-        return new FileSnapshot(parsed.Roots, message);
-    }
-
     public async Task<IReadOnlyDictionary<string, string>> LoadPinMarksAsync(
         IReadOnlyList<SubmoduleEntry> modules,
         CancellationToken cancellationToken)

@@ -11,8 +11,6 @@ public static class KeyMap
         ("Tab", AppCommand.NextBranch),
         ("Left", AppCommand.FocusTree),
         ("Right", AppCommand.FocusGraph),
-        ("[", AppCommand.PreviousBody),
-        ("]", AppCommand.NextBody),
         ("Up", AppCommand.MoveUp),
         ("Down", AppCommand.MoveDown),
         ("Space", AppCommand.ToggleFolder),
@@ -41,7 +39,6 @@ public static class KeyMap
         "Umschalt+Tab vorheriger Tab",
         "←            Submodule",
         "→            Commits",
-        "[ ]          Commits oder Baum",
         "↑ ↓        in der Liste oder im Graph bewegen",
         "Leertaste  Ordner auf- und zuklappen",
         "Enter      Pin vormerken, in Production den Staging-Pin",
@@ -93,16 +90,6 @@ public static class KeyMap
         if (key == Terminal.Gui.Input.Key.CursorRight)
         {
             return AppCommand.FocusGraph;
-        }
-
-        if (IsText(key, "["))
-        {
-            return AppCommand.PreviousBody;
-        }
-
-        if (IsText(key, "]"))
-        {
-            return AppCommand.NextBody;
         }
 
         if (key == Terminal.Gui.Input.Key.CursorUp)
@@ -181,18 +168,6 @@ public static class KeyMap
         }
 
         return null;
-    }
-
-    private static bool IsText(Key key, string text)
-    {
-        if (key.IsCtrl)
-        {
-            return false;
-        }
-
-        return key.AsGrapheme == text
-            || key.AssociatedText == text
-            || key == new Key(text[0]);
     }
 
     private static bool IsHelp(Key key)

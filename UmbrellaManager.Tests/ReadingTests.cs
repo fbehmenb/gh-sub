@@ -182,15 +182,13 @@ public class ReadingTests
         var keys = KeyMap.Bindings.Select(binding => binding.Key).ToArray();
         Assert.Equal(keys.Length, keys.Distinct().Count());
         Assert.Equal(
-            ["Shift+Tab", "Tab", "Left", "Right", "[", "]", "Up", "Down", "Space", "Enter", "A", "Delete", "C", "P", "J", "N", "S", "U", "R", "Q", "?"],
+            ["Shift+Tab", "Tab", "Left", "Right", "Up", "Down", "Space", "Enter", "A", "Delete", "C", "P", "J", "N", "S", "U", "R", "Q", "?"],
             keys);
         Assert.Equal(keys.Length, KeyMap.Bindings.Select(binding => binding.Command).Distinct().Count());
         Assert.Equal(AppCommand.NextBranch, KeyMap.Match(Key.Tab));
         Assert.Equal(AppCommand.PreviousBranch, KeyMap.Match(Key.Tab.WithShift));
         Assert.Equal(AppCommand.FocusTree, KeyMap.Match(Key.CursorLeft));
         Assert.Equal(AppCommand.FocusGraph, KeyMap.Match(Key.CursorRight));
-        Assert.Equal(AppCommand.PreviousBody, KeyMap.Match(new Key('[')));
-        Assert.Equal(AppCommand.NextBody, KeyMap.Match(new Key(']')));
     }
 
     [Fact]
@@ -204,7 +202,6 @@ public class ReadingTests
 
         Assert.Contains("nächster Tab", help);
         Assert.Contains("vorheriger Tab", help);
-        Assert.Contains("Commits oder Baum", help);
         Assert.Equal(1, KeyMap.FooterHeight);
         Assert.Equal("? Hilfe", KeyMap.HelpHint);
     }
@@ -321,43 +318,14 @@ public class ReadingTests
     }
 
     [Fact]
-    public void File_tree_nests_paths_and_keeps_the_commit_tree_sha()
+    public void Commit_parse_keeps_the_parent_sha()
     {
         const string commits = """
-            [{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parents":[{"sha":"cccccccccccccccccccccccccccccccccccccccc"}],"commit":{"message":"betreff\nrest","committer":{"date":"2026-10-01T00:00:00Z"},"tree":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}]
+            [{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parents":[{"sha":"cccccccccccccccccccccccccccccccccccccccc"}],"commit":{"message":"betreff\nrest","committer":{"date":"2026-10-01T00:00:00Z"}}}]
             """;
         var commit = Assert.Single(GitHubParse.ParseCommits(commits));
         Assert.Equal("betreff", commit.Subject);
-        Assert.Equal("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", commit.TreeSha);
         Assert.Equal(["cccccccccccccccccccccccccccccccccccccccc"], commit.Parents);
-
-        const string json = """
-            {
-              "truncated": true,
-              "tree": [
-                {"path": "models", "type": "tree"},
-                {"path": "models/foo.py", "type": "blob"},
-                {"path": "models/bar", "type": "tree"},
-                {"path": "models/bar/x.py", "type": "blob"},
-                {"path": "README.md", "type": "blob"},
-                {"path": "nested", "type": "commit"}
-              ]
-            }
-            """;
-        var parsed = FileTree.Parse(json);
-        Assert.True(parsed.Truncated);
-        var collapsed = FileTree.DeeperFolders(parsed.Roots);
-        var rows = FileTree.Flatten(parsed.Roots, collapsed);
-        Assert.Contains(rows, row => row.Name == "models" && row.IsFolder && row.Expanded);
-        Assert.Contains(rows, row => row.Name == "foo.py" && !row.IsFolder);
-        Assert.Contains(rows, row => row.Name == "bar" && row.IsFolder && !row.Expanded);
-        Assert.DoesNotContain(rows, row => row.Name == "x.py");
-        Assert.Contains(rows, row => row.Name == "README.md");
-        Assert.Contains(rows, row => row.Name == "nested" && !row.IsFolder);
-
-        collapsed.Remove("models/bar");
-        var open = FileTree.Flatten(parsed.Roots, collapsed);
-        Assert.Contains(open, row => row.Name == "x.py");
     }
 
     [Fact]
@@ -383,10 +351,15 @@ public class ReadingTests
 
         var rows = GraphBuilder.Build("19.0", standard, extra, pinSha: null, pendingSha: null);
         Assert.Equal(["19.0"], rows[0].Names);
+        Assert.Equal("pin ", GraphBuilder.Stamp(CommitTone.DarkGreen));
+        Assert.Equal("neu ", GraphBuilder.Stamp(CommitTone.LightGreen));
+        Assert.Equal("    ", GraphBuilder.Stamp(CommitTone.Gray));
         Assert.Contains(rows, row => row.Sha == right && row.Names!.Contains("feature"));
         Assert.Equal('*', rows[0].Cells![0].Symbol);
         Assert.Contains(rows, row => row.Cells!.Any(cell => cell.Symbol is '/' or '\\'));
         var glyphs = string.Concat(rows.Single(row => row.Sha == merge).Cells!.Select(cell => cell.Symbol));
         Assert.Contains("\\", glyphs);
+        var link = CommitGraph.Link(rows[1].Cells);
+        Assert.Contains(link, cell => cell.Symbol == '|');
     }
 }

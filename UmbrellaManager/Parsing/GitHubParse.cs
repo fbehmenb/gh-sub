@@ -198,13 +198,6 @@ public static partial class GitHubParse
             date = parsed;
         }
 
-        string? treeSha = null;
-        if (commit.TryGetProperty("tree", out var tree)
-            && tree.TryGetProperty("sha", out var treeShaElement))
-        {
-            treeSha = treeShaElement.GetString();
-        }
-
         var parents = new List<string>();
         if (element.TryGetProperty("parents", out var parentArray) && parentArray.ValueKind == JsonValueKind.Array)
         {
@@ -218,7 +211,7 @@ public static partial class GitHubParse
             }
         }
 
-        return new CommitInfo(sha, subject, date, treeSha, parents);
+        return new CommitInfo(sha, subject, date, parents);
     }
 
     public static IReadOnlyList<BranchTip> ParseBranches(string json)

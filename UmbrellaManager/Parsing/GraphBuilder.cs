@@ -57,14 +57,9 @@ public static class GraphBuilder
                 existing.Dots[lane] = true;
                 if (commit.Date > existing.Commit.Date)
                 {
-                    var chosen = commit.TreeSha is null && existing.Commit.TreeSha is not null
-                        ? commit with { TreeSha = existing.Commit.TreeSha }
+                    var chosen = commit.Parents is not { Count: > 0 } && existing.Commit.Parents is { Count: > 0 }
+                        ? commit with { Parents = existing.Commit.Parents }
                         : commit;
-                    if (chosen.Parents is not { Count: > 0 } && existing.Commit.Parents is { Count: > 0 })
-                    {
-                        chosen = chosen with { Parents = existing.Commit.Parents };
-                    }
-
                     bySha[commit.Sha] = (chosen, existing.Dots);
                 }
                 else if (existing.Commit.Parents is not { Count: > 0 } && commit.Parents is { Count: > 0 })
@@ -94,7 +89,6 @@ public static class GraphBuilder
                 item.Commit.Date,
                 item.Dots,
                 Tone(item.Commit.Sha, pinSha, pendingSha),
-                item.Commit.TreeSha,
                 Parents: item.Commit.Parents,
                 Names: names.TryGetValue(item.Commit.Sha, out var found) ? found : null))
             .ToList();
@@ -137,7 +131,6 @@ public static class GraphBuilder
                 commit.Date,
                 new bool[lanes],
                 Tone(commit.Sha, pinSha, pendingSha),
-                commit.TreeSha,
                 Parents: commit.Parents));
         }
 
@@ -163,6 +156,16 @@ public static class GraphBuilder
             var canPromote = !production && promotable.Any(sha => Sha.Same(sha, row.Sha));
             return row with { Mark = mark, Promotable = canPromote };
         }).ToList();
+    }
+
+    public static string Stamp(CommitTone tone)
+    {
+        return tone switch
+        {
+            CommitTone.DarkGreen => "pin ",
+            CommitTone.LightGreen => "neu ",
+            _ => "    ",
+        };
     }
 
     public static string Badge(PinMark mark)

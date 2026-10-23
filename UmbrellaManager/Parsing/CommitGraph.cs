@@ -17,6 +17,25 @@ public static class CommitGraph
         return result;
     }
 
+    public static IReadOnlyList<GraphCell> Link(IReadOnlyList<GraphCell>? next)
+    {
+        if (next is null || next.Count == 0)
+        {
+            return [];
+        }
+
+        var cells = new GraphCell[next.Count];
+        for (var i = 0; i < next.Count; i++)
+        {
+            var cell = next[i];
+            cells[i] = cell.Symbol == ' ' || cell.Lane < 0
+                ? new GraphCell(' ', -1)
+                : new GraphCell('|', cell.Lane);
+        }
+
+        return cells;
+    }
+
     private static GraphCell[] Step(List<string?> columns, GraphRow row)
     {
         var parents = Distinct(row.Parents);
