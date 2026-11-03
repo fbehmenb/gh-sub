@@ -77,9 +77,13 @@ public sealed class CommitGraphPane : View
     {
         Painter.Line(this, line, "", new Attribute(Painter.Ink, Painter.Paper));
         var x = 0;
-        foreach (var cell in CommitGraph.Link(next.Cells))
+        foreach (var glyph in CommitGraph.PaintLink(next.Cells))
         {
-            Painter.Put(this, x, line, cell.Symbol.ToString(), new Attribute(Painter.Lane(cell.Lane), Painter.Paper), 1);
+            if (glyph.Symbol != ' ')
+            {
+                Painter.Put(this, x, line, glyph.Symbol.ToString(), new Attribute(Painter.Lane(glyph.Lane), Painter.Paper), 1);
+            }
+
             x++;
         }
     }
@@ -94,10 +98,14 @@ public sealed class CommitGraphPane : View
         var x = 0;
         if (commit.Cells is { Count: > 0 } cells)
         {
-            foreach (var cell in cells)
+            foreach (var glyph in CommitGraph.Paint(cells))
             {
-                var color = selected ? Painter.Ink : Painter.Lane(cell.Lane);
-                Painter.Put(this, x, line, cell.Symbol.ToString(), new Attribute(color, background), 1);
+                if (glyph.Symbol != ' ')
+                {
+                    var color = selected ? Painter.Ink : Painter.Lane(glyph.Lane);
+                    Painter.Put(this, x, line, glyph.Symbol.ToString(), new Attribute(color, background), 1);
+                }
+
                 x++;
             }
 

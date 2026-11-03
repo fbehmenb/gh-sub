@@ -217,13 +217,29 @@ public static partial class GitHubParse
     public static IReadOnlyList<BranchTip> ParseBranches(string json)
     {
         using var document = JsonDocument.Parse(json);
-        if (document.RootElement.ValueKind != JsonValueKind.Array)
+        if (document.RootElement.ValueKind == JsonValueKind.Array)
         {
-            return [];
+            return ParseRestBranches(document.RootElement);
         }
 
+        if (document.RootElement.TryGetProperty("data", out var data)
+            && data.ValueKind == JsonValueKind.Object
+            && data.TryGetProperty("repository", out var repository)
+            && repository.ValueKind == JsonValueKind.Object
+            && repository.TryGetProperty("refs", out var refs)
+            && refs.TryGetProperty("nodes", out var nodes)
+            && nodes.ValueKind == JsonValueKind.Array)
+        {
+            return ParseGraphqlBranches(nodes);
+        }
+
+        return [];
+    }
+
+    private static List<BranchTip> ParseRestBranches(JsonElement branches)
+    {
         var tips = new List<BranchTip>();
-        foreach (var element in document.RootElement.EnumerateArray())
+        foreach (var element in branches.EnumerateArray())
         {
             var name = element.TryGetProperty("name", out var nameElement) ? nameElement.GetString() : null;
             if (string.IsNullOrEmpty(name) || !element.TryGetProperty("commit", out var commit))
@@ -236,6 +252,43 @@ public static partial class GitHubParse
             if (commit.TryGetProperty("commit", out var inner)
                 && inner.TryGetProperty("committer", out var committer)
                 && committer.TryGetProperty("date", out var dateElement)
+                && DateTimeOffset.TryParse(dateElement.GetString(), out var parsed))
+            {
+                date = parsed;
+            }
+
+            tips.Add(new BranchTip(name, sha, date, PinIsOnBranch: false));
+        }
+
+        return tips;
+    }
+
+    private static List<BranchTip> ParseGraphqlBranches(JsonElement nodes)
+    {
+        var tips = new List<BranchTip>();
+        foreach (var element in nodes.EnumerateArray())
+        {
+            if (element.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var name = element.TryGetProperty("name", out var nameElement) ? nameElement.GetString() : null;
+            if (string.IsNullOrEmpty(name)
+                || !element.TryGetProperty("target", out var target)
+                || target.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var sha = target.TryGetProperty("oid", out var oid) ? oid.GetString() ?? "" : "";
+            if (sha.Length == 0)
+            {
+                continue;
+            }
+
+            DateTimeOffset? date = null;
+            if (target.TryGetProperty("committedDate", out var dateElement)
                 && DateTimeOffset.TryParse(dateElement.GetString(), out var parsed))
             {
                 date = parsed;

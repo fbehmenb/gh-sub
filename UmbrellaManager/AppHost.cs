@@ -23,26 +23,35 @@ public static class AppHost
                 return 1;
             }
 
-            var saved = UserSetup.Load(UserSetup.DefaultFilePath, out _);
-            var savedReady = saved is not null && Directory.Exists(saved.LocalPath);
-            var suggested = args.Length > 0 ? Path.GetFullPath(args[0]) : null;
-            var path = await FirstRun.EnsureAsync(
-                UserSetup.DefaultFilePath,
-                suggested,
-                Console.In,
-                Console.Out,
-                process,
-                Directory.Exists,
-                File.Exists,
-                static directory => Directory.EnumerateFileSystemEntries(directory).Any()).ConfigureAwait(false);
-            if (path is null)
+            var argument = SessionLaunch.ArgumentPath(args);
+            string? checkout = null;
+            if (argument is null && SessionLaunch.IsExtension(Environment.GetEnvironmentVariable("GH_EXTENSION")))
             {
-                return 1;
+                checkout = await CheckoutRoot.ResolveAsync(process, Directory.GetCurrentDirectory(), CancellationToken.None)
+                    .ConfigureAwait(false);
             }
 
-            if (savedReady && suggested is not null)
+            var suggested = argument ?? checkout;
+            string? path;
+            if (suggested is not null && Directory.Exists(suggested))
             {
                 path = suggested;
+            }
+            else
+            {
+                path = await FirstRun.EnsureAsync(
+                    UserSetup.DefaultFilePath,
+                    suggested,
+                    Console.In,
+                    Console.Out,
+                    process,
+                    Directory.Exists,
+                    File.Exists,
+                    static directory => Directory.EnumerateFileSystemEntries(directory).Any()).ConfigureAwait(false);
+                if (path is null)
+                {
+                    return 1;
+                }
             }
 
             var problem = await StartupCheck.FindProblemAsync(process, path, Directory.Exists).ConfigureAwait(false);
@@ -59,27 +68,29 @@ public static class AppHost
             }
 
             var source = new UmbrellaSource(process, new ResponseCache(), path);
-            Console.WriteLine("Hole Branches …");
-            var branches = await source.LoadBranchesAsync(config.HiddenBranchPattern, CancellationToken.None).ConfigureAwait(false);
-            if (branches.Count == 0)
-            {
-                Console.Error.WriteLine("Keine Remote-Branches gefunden.");
-                return 1;
-            }
-
-            var controller = new SessionController(source, branches, config.HiddenBranchPattern, config.PinTitle);
-            controller.RememberTips(source.BranchTips);
-            await controller.LoadCurrentAsync().ConfigureAwait(false);
+            var controller = new SessionController(source, [], config.HiddenBranchPattern, config.PinTitle);
             var setup = UserSetup.Load(UserSetup.DefaultFilePath, out _);
             controller.UseSetup(UserSetup.DefaultFilePath, setup?.PollIntervalSeconds);
             IApplication app = Application.Create();
             app.Init();
             controller.Post = action => app.Invoke(action);
             using var shell = new ShellView(controller, app);
+            controller.BeginLoading("Hole Remote-Branches …");
+            var started = false;
+            shell.Initialized += (_, _) =>
+            {
+                if (started)
+                {
+                    return;
+                }
+
+                started = true;
+                _ = controller.StartupAsync();
+            };
             app.Run(shell);
             controller.Cancel();
             app.Dispose();
-            return 0;
+            return controller.StartupFailed ? 1 : 0;
         }
         catch (UserFacingException ex)
         {

@@ -19,7 +19,9 @@ public readonly record struct RowHintInput(
     bool Conflict = false,
     bool NewerOnBranch = false,
     bool Setup = false,
-    bool Promotable = false);
+    bool Promotable = false,
+    bool Checking = false,
+    bool Success = false);
 
 public static class RowHint
 {
@@ -45,9 +47,19 @@ public static class RowHint
             return "Jetzt: Pull Requests werden angelegt";
         }
 
+        if (row.Success)
+        {
+            return "Jetzt: Erfolgreich · Taste schließt";
+        }
+
         if (row.Result)
         {
             return "Jetzt: beliebige Taste schließt die Meldung";
+        }
+
+        if (row.Checking)
+        {
+            return "Jetzt: Repo-Stand wird abgeglichen";
         }
 
         if (row.Confirming)

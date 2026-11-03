@@ -4,6 +4,7 @@ using System.Text.Json;
 using Terminal.Gui.Input;
 using UmbrellaManager.Input;
 using UmbrellaManager.Services;
+using UmbrellaManager.Views;
 using UmbrellaManager.Model;
 using UmbrellaManager.Parsing;
 
@@ -263,6 +264,19 @@ public class ReadingTests
         Assert.Equal("░░░░░░ 0/2", PinPublisher.ProgressBar(0, 2, 10));
         Assert.Equal("███░░░ 1/2", PinPublisher.ProgressBar(1, 2, 10));
         Assert.Equal("██████ 2/2", PinPublisher.ProgressBar(2, 2, 10));
+        var running = LoadMeter.Bar(0, 4, 0, 16);
+        Assert.Equal(16, running.Length);
+        Assert.EndsWith(" 0/4", running);
+        Assert.Contains('█', running);
+        Assert.Contains('░', running);
+        Assert.NotEqual(running, LoadMeter.Bar(0, 4, 2, 16));
+        var halfway = LoadMeter.Bar(2, 4, 0, 20);
+        Assert.StartsWith("█", halfway);
+        Assert.EndsWith(" 2/4", halfway);
+        Assert.DoesNotContain('░', LoadMeter.Bar(4, 4, 1, 16));
+        Assert.Equal("░░░░", LoadMeter.Fill(0, 4));
+        Assert.Equal("██░░", LoadMeter.Fill(0.5, 4));
+        Assert.Equal("████", LoadMeter.Fill(1, 4));
         Assert.True(PinPublisher.IsConflicting("{\"mergeable\":\"CONFLICTING\"}"));
         Assert.False(PinPublisher.IsConflicting("{\"mergeable\":\"MERGEABLE\"}"));
         Assert.Equal(
@@ -318,6 +332,29 @@ public class ReadingTests
     }
 
     [Fact]
+    public void Graphql_branch_list_keeps_the_tip_date_so_a_newer_branch_becomes_a_lane()
+    {
+        const string json = """
+            {"data":{"repository":{"refs":{"nodes":[
+              {"name":"19.0","target":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","committedDate":"2026-10-19T04:23:57Z"}},
+              {"name":"19.0-staging","target":{"oid":"cccccccccccccccccccccccccccccccccccccccc","committedDate":"2026-10-23T06:43:28Z"}},
+              {"name":"leer","target":null}
+            ]}}}}
+            """;
+        var tips = GitHubParse.ParseBranches(json);
+        var staging = Assert.Single(tips, tip => tip.Name == "19.0-staging");
+        Assert.Equal(new DateTimeOffset(2026, 10, 23, 6, 43, 28, TimeSpan.Zero), staging.TipDate);
+        Assert.DoesNotContain(tips, tip => tip.Name == "leer");
+
+        var standard = tips.Single(tip => tip.Name == "19.0");
+        var lanes = GraphBuilder.SelectExtraLanes(standard, pinOnStandard: true, tips, new HashSet<string>(StringComparer.OrdinalIgnoreCase) { Pin });
+        Assert.Equal(["19.0-staging"], lanes.Select(lane => lane.Name).ToArray());
+
+        var undated = tips.Select(tip => tip with { TipDate = null }).ToArray();
+        Assert.Empty(GraphBuilder.SelectExtraLanes(undated[0], pinOnStandard: true, undated, new HashSet<string> { Pin }));
+    }
+
+    [Fact]
     public void Commit_parse_keeps_the_parent_sha()
     {
         const string commits = """
@@ -361,5 +398,55 @@ public class ReadingTests
         Assert.Contains("\\", glyphs);
         var link = CommitGraph.Link(rows[1].Cells);
         Assert.Contains(link, cell => cell.Symbol == '|');
+        Assert.Equal(
+            ["● ", "│   ", "●─╮ ", "│ │ ", "● │ ", "│ │ ", "│ ● ", "│ │ ", "●─╯ "],
+            Picture(rows));
+    }
+
+    [Fact]
+    public void Commit_graph_paints_rounded_branches()
+    {
+        Assert.Equal("●─╮ ", Line(CommitGraph.Paint([new GraphCell('*', 0), new GraphCell('\\', 1)])));
+        Assert.Equal("●─╯ ", Line(CommitGraph.Paint([new GraphCell('*', 0), new GraphCell('/', 1)])));
+        Assert.Equal("╰─● ", Line(CommitGraph.Paint([new GraphCell('\\', 0), new GraphCell('*', 1)])));
+        Assert.Equal("╭─● ", Line(CommitGraph.Paint([new GraphCell('/', 0), new GraphCell('*', 1)])));
+        Assert.Equal("●─┼─╮ ", Line(CommitGraph.Paint([
+            new GraphCell('*', 0),
+            new GraphCell('|', 1),
+            new GraphCell('\\', 2),
+        ])));
+        Assert.Equal("●─┼───╮ ", Line(CommitGraph.Paint([
+            new GraphCell('*', 0),
+            new GraphCell('+', 1),
+            new GraphCell('-', 2),
+            new GraphCell('\\', 3),
+        ])));
+        Assert.Equal("│   ", Line(CommitGraph.PaintLink([new GraphCell('*', 0), new GraphCell('\\', 1)])));
+        Assert.Equal("│ │ ", Line(CommitGraph.PaintLink([new GraphCell('*', 0), new GraphCell('/', 1)])));
+        Assert.Equal("│ │ ", Line(CommitGraph.PaintLink([new GraphCell('\\', 0), new GraphCell('*', 1)])));
+        Assert.Equal("  │ ", Line(CommitGraph.PaintLink([new GraphCell('/', 0), new GraphCell('*', 1)])));
+        var branch = CommitGraph.Paint([new GraphCell('*', 0), new GraphCell('\\', 1)]);
+        Assert.Equal(0, branch[0].Lane);
+        Assert.Equal(1, branch[2].Lane);
+    }
+
+    private static string Line(IReadOnlyList<CommitGraph.Glyph> glyphs)
+    {
+        return string.Concat(glyphs.Select(glyph => glyph.Symbol));
+    }
+
+    private static List<string> Picture(IReadOnlyList<GraphRow> rows)
+    {
+        var lines = new List<string>();
+        for (var i = 0; i < rows.Count; i++)
+        {
+            lines.Add(Line(CommitGraph.Paint(rows[i].Cells)));
+            if (i + 1 < rows.Count)
+            {
+                lines.Add(Line(CommitGraph.PaintLink(rows[i + 1].Cells)));
+            }
+        }
+
+        return lines;
     }
 }

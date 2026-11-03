@@ -25,6 +25,8 @@ public sealed class UmbrellaSource
 
     public IReadOnlyDictionary<string, string> BranchTips { get; private set; } = new Dictionary<string, string>(StringComparer.Ordinal);
 
+    internal Action<string>? Progress { get; set; }
+
     public void ClearCache()
     {
         _cache.Clear();
@@ -254,11 +256,13 @@ public sealed class UmbrellaSource
         ProcessResult remote;
         try
         {
+            Pulse("Hole Remote-Branches …");
             fetch = await _process.RunAsync(
                 "git",
                 ["fetch", "origin", "+refs/heads/*:refs/remotes/origin/*"],
                 _path,
                 cancellationToken).ConfigureAwait(false);
+            Pulse("Lese Remote-Branches …");
             remote = await _process.RunAsync("git", ["ls-remote", "--heads", "origin"], _path, cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -279,6 +283,7 @@ public sealed class UmbrellaSource
             return names;
         }
 
+        Pulse("Lese lokale Branches …");
         var local = await _process.RunAsync("git", ["branch", "-r", "--format=%(refname:short)"], _path, cancellationToken).ConfigureAwait(false);
         if (local.ExitCode != 0)
         {
@@ -306,6 +311,7 @@ public sealed class UmbrellaSource
                 continue;
             }
 
+            Pulse("Lese Spitze von " + branch + " …");
             var parsed = await ReadTipAsync(branch, cancellationToken).ConfigureAwait(false);
             if (parsed is not null)
             {
@@ -326,6 +332,7 @@ public sealed class UmbrellaSource
         var kept = new List<string>();
         foreach (var branch in branches)
         {
+            Pulse("Prüfe .gitmodules auf " + branch + " …");
             var probe = await _process.RunAsync(
                 "git",
                 ["cat-file", "-e", "origin/" + branch + ":.gitmodules"],
@@ -348,11 +355,13 @@ public sealed class UmbrellaSource
     public async Task<IReadOnlyList<TreeNode>> LoadTreeAsync(string branch, CancellationToken cancellationToken)
     {
         var reference = "origin/" + branch;
+        Pulse("Lese .gitmodules von " + branch + " …");
         var modules = await _process.RunAsync(
             "git",
             ["--no-pager", "-c", "core.quotepath=false", "show", reference + ":.gitmodules"],
             _path,
             cancellationToken).ConfigureAwait(false);
+        Pulse("Lese Submodule von " + branch + " …");
         var tree = await _process.RunAsync(
             "git",
             ["--no-pager", "-c", "core.quotepath=false", "ls-tree", "-r", reference],
@@ -409,6 +418,7 @@ public sealed class UmbrellaSource
             return new GraphSnapshot([], [], "Kein Standard-Branch für das Modul.");
         }
 
+        Pulse("Lade Commits von " + Leaf(module.Path) + " …");
         var standardCommits = await CommitsAsync(repo, standardName, cancellationToken).ConfigureAwait(false);
         var pinOnStandard = module.Sha is not null && standardCommits.Any(commit => Sha.Same(commit.Sha, module.Sha));
         if (module.Sha is not null && !pinOnStandard)
@@ -416,6 +426,7 @@ public sealed class UmbrellaSource
             pinOnStandard = await IsOnBranchAsync(repo, module.Sha, standardName, cancellationToken).ConfigureAwait(false);
         }
 
+        Pulse("Lese Branches von " + Leaf(module.Path) + " …");
         var tips = await BranchesAsync(repo, cancellationToken).ConfigureAwait(false);
         var matched = tips.Where(tip => tip.Name == standardName).Take(1).ToArray();
         var fallbackCommit = standardCommits.Count == 0 ? default : standardCommits[0];
@@ -438,6 +449,7 @@ public sealed class UmbrellaSource
         var extraCommits = new List<(string Name, IReadOnlyList<CommitInfo> Commits)>();
         foreach (var lane in extra)
         {
+            Pulse("Lade Branch " + lane.Name + " …");
             extraCommits.Add((lane.Name, await CommitsAsync(repo, lane.Name, cancellationToken).ConfigureAwait(false)));
         }
 
@@ -540,8 +552,31 @@ public sealed class UmbrellaSource
 
     private async Task<IReadOnlyList<BranchTip>> BranchesAsync(GitHubRepo repo, CancellationToken cancellationToken)
     {
-        var route = $"repos/{Escape(repo.Owner)}/{Escape(repo.Name)}/branches?per_page=100";
-        return GitHubParse.ParseBranches(await ApiAsync(route, cancellationToken).ConfigureAwait(false));
+        // REST /branches liefert nur sha und url. Ohne Commit-Datum gilt kein Branch als jünger,
+        // und jüngere Spuren wie 19.0-staging fallen weg.
+        const string query = """
+            query($owner: String!, $name: String!) {
+              repository(owner: $owner, name: $name) {
+                refs(refPrefix: "refs/heads/", first: 100) {
+                  nodes {
+                    name
+                    target {
+                      ... on Commit {
+                        oid
+                        committedDate
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """;
+        var cacheKey = "graphql:heads:" + repo.Owner + "/" + repo.Name;
+        var json = await GhAsync(
+            cacheKey,
+            ["api", "graphql", "--raw-field", "query=" + query, "--raw-field", "owner=" + repo.Owner, "--raw-field", "name=" + repo.Name],
+            cancellationToken).ConfigureAwait(false);
+        return GitHubParse.ParseBranches(json);
     }
 
     private async Task<bool> IsOnBranchAsync(GitHubRepo repo, string sha, string branch, CancellationToken cancellationToken)
@@ -551,17 +586,30 @@ public sealed class UmbrellaSource
         return CompareStatus.PinIsOnBranch(status);
     }
 
-    private async Task<string> ApiAsync(string route, CancellationToken cancellationToken)
+    private void Pulse(string message) => Progress?.Invoke(message);
+
+    private static string Leaf(string path)
     {
-        var result = await _process.RunAsync("gh", ["api", route], _path, cancellationToken).ConfigureAwait(false);
+        var slash = path.LastIndexOf('/');
+        return slash < 0 ? path : path[(slash + 1)..];
+    }
+
+    private Task<string> ApiAsync(string route, CancellationToken cancellationToken)
+    {
+        return GhAsync(route, ["api", route], cancellationToken);
+    }
+
+    private async Task<string> GhAsync(string cacheKey, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    {
+        var result = await _process.RunAsync("gh", arguments, _path, cancellationToken).ConfigureAwait(false);
         if (result.ExitCode == 0 && !string.IsNullOrWhiteSpace(result.StandardOutput))
         {
-            _cache.Set(route, result.StandardOutput);
+            _cache.Set(cacheKey, result.StandardOutput);
             return result.StandardOutput;
         }
 
         var message = GitHubText.Describe(result.StandardOutput, result.StandardError);
-        if (GitHubText.IsOffline(message) && _cache.TryGet(route, out var cached))
+        if (GitHubText.IsOffline(message) && _cache.TryGet(cacheKey, out var cached))
         {
             Offline = true;
             return cached;

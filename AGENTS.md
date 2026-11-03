@@ -11,6 +11,7 @@ Lokales Terminal-Tool für die Submodul-Pins des Odoo-Umbrella. Es zeigt ein Clo
 - `dotnet build umbrella-manager-local.sln`
 - `dotnet test umbrella-manager-local.sln`
 - `dotnet publish UmbrellaManager/UmbrellaManager.csproj -c Release -r win-x64 -p:PublishSingleFile=true`
+- Erweiterung: Repository `gh-sub`, Tag `v*`, danach `gh extension install <Organisation>/gh-sub` und Aufruf `gh sub`
 
 ## Konventionen
 

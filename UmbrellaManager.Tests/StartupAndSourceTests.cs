@@ -268,9 +268,9 @@ public class StartupAndSourceTests
                 return new ProcessResult(0, commits, "");
             }
 
-            if (joined.Contains("branches"))
+            if (joined.Contains("graphql"))
             {
-                return new ProcessResult(0, "[{\"name\":\"19.0\",\"commit\":{\"sha\":\"" + foreign + "\",\"commit\":{\"committer\":{\"date\":\"2026-10-04T00:00:00Z\"}}}}]", "");
+                return new ProcessResult(0, Heads("19.0", foreign, "2026-10-04T00:00:00Z"), "");
             }
 
             if (joined.Contains("contents"))
@@ -331,6 +331,17 @@ public class StartupAndSourceTests
         return "{\"sha\":\"" + sha + "\",\"commit\":{\"message\":\"" + subject + "\",\"committer\":{\"date\":\"" + date + "\"}}}";
     }
 
+    private static string Heads(string name, string sha, string date)
+    {
+        return "{\"data\":{\"repository\":{\"refs\":{\"nodes\":[{\"name\":\""
+            + name
+            + "\",\"target\":{\"oid\":\""
+            + sha
+            + "\",\"committedDate\":\""
+            + date
+            + "\"}}]}}}}";
+    }
+
     [Fact]
     public void Dev_tab_defers_writes()
     {
@@ -380,10 +391,9 @@ public class StartupAndSourceTests
                 return new ProcessResult(0, commits, "");
             }
 
-            if (joined.Contains("branches"))
+            if (joined.Contains("graphql"))
             {
-                var branches = "[{\"name\":\"19.0\",\"commit\":{\"sha\":\"" + newer + "\",\"commit\":{\"committer\":{\"date\":\"2026-10-03T00:00:00Z\"}}}}]";
-                return new ProcessResult(0, branches, "");
+                return new ProcessResult(0, Heads("19.0", newer, "2026-10-03T00:00:00Z"), "");
             }
 
             return new ProcessResult(0, "", "");
@@ -425,10 +435,16 @@ public class StartupAndSourceTests
         const string newer = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
         const string tip = "cccccccccccccccccccccccccccccccccccccccc";
         var calls = new List<IReadOnlyList<string>>();
+        SessionController? live = null;
+        string? checkMessage = null;
         var process = new ScriptedProcess((file, args) =>
         {
             calls.Add(args);
             var joined = string.Join(' ', args);
+            if (joined.Contains("fetch") && live?.CheckingRemote == true)
+            {
+                checkMessage = live.PrProposal?.FirstOrDefault();
+            }
             if (joined.Contains("rev-parse"))
             {
                 return new ProcessResult(0, tip, "");
@@ -463,9 +479,9 @@ public class StartupAndSourceTests
                 return new ProcessResult(0, commits, "");
             }
 
-            if (joined.Contains("branches"))
+            if (joined.Contains("graphql"))
             {
-                return new ProcessResult(0, "[{\"name\":\"19.0\",\"commit\":{\"sha\":\"" + newer + "\",\"commit\":{\"committer\":{\"date\":\"2026-10-03T00:00:00Z\"}}}}]", "");
+                return new ProcessResult(0, Heads("19.0", newer, "2026-10-03T00:00:00Z"), "");
             }
 
             if (args.Contains("pr"))
@@ -476,6 +492,7 @@ public class StartupAndSourceTests
             return new ProcessResult(0, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n", "");
         });
         var controller = new SessionController(new UmbrellaSource(process, new ResponseCache(), "C:\\repo"), ["dev/19.0"], "chore/pin-*");
+        live = controller;
         await controller.LoadCurrentAsync();
         controller.Execute(AppCommand.CreatePr);
         Assert.Equal("Nichts vorgemerkt.", controller.Message);
@@ -485,6 +502,7 @@ public class StartupAndSourceTests
         controller.Execute(AppCommand.StagePin);
         controller.Execute(AppCommand.CreatePr);
 
+        Assert.Contains("Repo-Stand", checkMessage ?? "");
         Assert.NotNull(controller.PrProposal);
         Assert.Contains(controller.PrProposal, line => line.Contains("gb_a", StringComparison.Ordinal) && line.Contains('→'));
         Assert.Contains(controller.PrProposal, line => line.Contains("j pushen", StringComparison.Ordinal) && line.Contains("n abbrechen", StringComparison.Ordinal));
@@ -504,18 +522,33 @@ public class StartupAndSourceTests
         Assert.Contains("vorgemerkt: gb_a", controller.Message);
         Assert.DoesNotContain(calls, args => args.Contains("push"));
 
+        controller.SuccessHold = TimeSpan.FromMilliseconds(40);
         controller.Execute(AppCommand.CreatePr);
         controller.Execute(AppCommand.ConfirmPush);
 
         Assert.Contains(calls, args => args.Contains("push") && args.Any(argument => argument.Contains("refs/heads/chore/pin-gb_a-", StringComparison.Ordinal)));
         Assert.Contains(calls, args => args.Contains("--base") && args.Contains("dev/19.0") && args.Contains("--head"));
         Assert.DoesNotContain(calls, args => args.Contains("--force") || args.Contains("-f"));
-        Assert.Contains(controller.PrProposal!, line => line.Contains("Keine Konflikte · PR 1", StringComparison.Ordinal));
-        Assert.Contains(controller.PrProposal!, line => line.Contains("beliebige Taste schließt", StringComparison.Ordinal));
+        Assert.NotNull(controller.PrProposal);
+        Assert.Contains(controller.PrProposal, line => line.Contains("Erfolgreich", StringComparison.Ordinal));
+        Assert.Contains(controller.PrProposal, line => line.Contains("PR 1", StringComparison.Ordinal));
+        Assert.Contains(controller.PrProposal, line => line.Contains("Taste schließt", StringComparison.Ordinal));
+        Assert.InRange(controller.SuccessFraction, 0, 0.95);
+        Assert.Contains("Erfolgreich", controller.Message);
         Assert.False(controller.PushRunning);
-        Assert.Equal(1, controller.PushDone);
-        Assert.Equal(1, controller.PushTotal);
-        Assert.Equal("keine vorgemerkten Änderungen", controller.Message);
+        await Task.Delay(200);
+        Assert.Null(controller.PrProposal);
+        Assert.DoesNotContain("Erfolgreich", controller.Message);
+
+        controller.SuccessHold = TimeSpan.FromSeconds(30);
+        controller.Execute(AppCommand.StagePin);
+        controller.Execute(AppCommand.CreatePr);
+        controller.Execute(AppCommand.ConfirmPush);
+        Assert.Contains(controller.PrProposal!, line => line.Contains("Erfolgreich", StringComparison.Ordinal));
+        Assert.Contains(controller.PrProposal!, line => line.Contains("Taste schließt", StringComparison.Ordinal));
+        controller.Execute(AppCommand.MoveDown);
+        Assert.Null(controller.PrProposal);
+        Assert.DoesNotContain("Erfolgreich", controller.Message);
     }
 
     [Fact]
@@ -568,6 +601,207 @@ public class StartupAndSourceTests
                 Directory.Delete(directory, recursive: true);
             }
         }
+    }
+
+    [Fact]
+    public async Task Reload_keeps_the_selected_submodule()
+    {
+        var controller = TreeController(dropSelected: false);
+        await controller.LoadCurrentAsync();
+        controller.Execute(AppCommand.MoveDown);
+
+        Assert.Equal("gb_b", controller.Selected?.Path);
+        controller.Execute(AppCommand.Reload);
+
+        Assert.Equal("gb_b", controller.Selected?.Path);
+        Assert.Equal(NextPin, controller.Selected?.Sha);
+        Assert.False(controller.Loading);
+    }
+
+    [Fact]
+    public async Task Reload_selects_the_top_submodule_when_the_previous_one_is_gone()
+    {
+        var controller = TreeController(dropSelected: true);
+        await controller.LoadCurrentAsync();
+        controller.Execute(AppCommand.MoveDown);
+        controller.Execute(AppCommand.Reload);
+
+        Assert.Equal("aaa/gb_c", controller.Selected?.Path);
+        Assert.False(controller.Selected?.IsFolder);
+        Assert.False(controller.Loading);
+    }
+
+    [Fact]
+    public async Task Startup_shows_changing_loading_steps_and_ignores_navigation()
+    {
+        SessionController? current = null;
+        var moved = false;
+        var process = new ScriptedProcess((_, args) =>
+        {
+            var joined = string.Join(' ', args);
+            if (joined.Contains("commits") && current is { Loading: true } && !moved)
+            {
+                moved = true;
+                current.Execute(AppCommand.MoveDown);
+                current.Execute(AppCommand.ShowHelp);
+            }
+
+            if (joined.Contains("ls-remote"))
+            {
+                return new ProcessResult(0, Pin + "\trefs/heads/dev/19.0\n", "");
+            }
+
+            if (joined.Contains("show"))
+            {
+                return new ProcessResult(0, Modules("gb_a") + Modules("gb_b"), "");
+            }
+
+            if (joined.Contains("ls-tree"))
+            {
+                return new ProcessResult(0, Link("gb_a", Pin) + Link("gb_b", Pin), "");
+            }
+
+            if (joined.Contains("commits"))
+            {
+                return new ProcessResult(0, "[" + Commit(Pin, "aktuell", "2026-10-01T00:00:00Z") + "]", "");
+            }
+
+            if (joined.Contains("graphql"))
+            {
+                return new ProcessResult(0, Heads("19.0", Pin, "2026-10-01T00:00:00Z"), "");
+            }
+
+            if (joined.Contains("rev-parse") && joined.Contains("origin/dev/19.0") && !joined.Contains(':'))
+            {
+                return new ProcessResult(0, Pin + "\n", "");
+            }
+
+            if (joined.Contains("get-url"))
+            {
+                return new ProcessResult(0, "https://github.com/Org/odoo_umbrella\n", "");
+            }
+
+            return new ProcessResult(0, "", "");
+        });
+        var controller = new SessionController(new UmbrellaSource(process, new ResponseCache(), "C:\\repo"), [], "chore/pin-*");
+        current = controller;
+        var messages = new List<string>();
+        controller.Changed += () =>
+        {
+            if (controller.Loading && controller.LoadingMessage.Length > 0)
+            {
+                messages.Add(controller.LoadingMessage);
+            }
+        };
+
+        await controller.StartupAsync();
+
+        Assert.False(controller.Loading);
+        Assert.False(controller.LoadingFailed);
+        Assert.False(controller.HelpVisible);
+        Assert.Equal("gb_a", controller.Selected?.Path);
+        Assert.True(controller.LoadingDone >= 2);
+        Assert.Contains(messages, message => message.Contains("Remote-Branches", StringComparison.Ordinal));
+        Assert.Contains(messages, message => message.Contains(".gitmodules", StringComparison.Ordinal));
+        Assert.Contains(messages, message => message.Contains("Commits", StringComparison.Ordinal));
+        Assert.True(messages.Distinct().Count() >= 3);
+    }
+
+    [Fact]
+    public async Task Startup_keeps_the_loading_screen_when_no_branch_exists()
+    {
+        var process = new ScriptedProcess((_, _) => new ProcessResult(0, "", ""));
+        var controller = new SessionController(new UmbrellaSource(process, new ResponseCache(), "C:\\repo"), [], "chore/pin-*");
+
+        await controller.StartupAsync();
+
+        Assert.True(controller.Loading);
+        Assert.True(controller.LoadingFailed);
+        Assert.True(controller.StartupFailed);
+        Assert.Contains("Keine Remote-Branches", controller.LoadingMessage);
+        controller.Execute(AppCommand.Reload);
+        controller.Execute(AppCommand.MoveDown);
+        Assert.True(controller.LoadingFailed);
+    }
+
+    private const string Pin = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    private const string NextPin = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    private static SessionController TreeController(bool dropSelected)
+    {
+        var generation = 0;
+        var process = new ScriptedProcess((_, args) =>
+        {
+            var joined = string.Join(' ', args);
+            if (joined.Contains("ls-remote"))
+            {
+                return new ProcessResult(0, Pin + "\trefs/heads/dev/19.0\n", "");
+            }
+
+            if (joined.Contains("show"))
+            {
+                generation++;
+                var reload = generation > 1;
+                if (reload && dropSelected)
+                {
+                    return new ProcessResult(0, Modules("aaa/gb_c") + Modules("gb_a"), "");
+                }
+
+                return new ProcessResult(0, Modules("gb_a") + Modules("gb_b"), "");
+            }
+
+            if (joined.Contains("ls-tree"))
+            {
+                var reload = generation > 1;
+                if (reload && dropSelected)
+                {
+                    return new ProcessResult(0, Link("aaa/gb_c", Pin) + Link("gb_a", Pin), "");
+                }
+
+                var sha = reload ? NextPin : Pin;
+                return new ProcessResult(0, Link("gb_a", sha) + Link("gb_b", sha), "");
+            }
+
+            if (joined.Contains("commits"))
+            {
+                return new ProcessResult(
+                    0,
+                    "[" + Commit(Pin, "aktuell", "2026-10-01T00:00:00Z") + "," + Commit(NextPin, "danach", "2026-10-02T00:00:00Z") + "]",
+                    "");
+            }
+
+            if (joined.Contains("graphql"))
+            {
+                return new ProcessResult(0, Heads("19.0", Pin, "2026-10-01T00:00:00Z"), "");
+            }
+
+            if (joined.Contains("rev-parse") && joined.Contains("origin/dev/19.0") && !joined.Contains(':'))
+            {
+                return new ProcessResult(0, Pin + "\n", "");
+            }
+
+            if (joined.Contains("get-url"))
+            {
+                return new ProcessResult(0, "https://github.com/Org/odoo_umbrella\n", "");
+            }
+
+            return new ProcessResult(0, "", "");
+        });
+        return new SessionController(new UmbrellaSource(process, new ResponseCache(), "C:\\repo"), ["dev/19.0"], "chore/pin-*");
+    }
+
+    private static string Modules(string path)
+    {
+        return "[submodule \"" + path + "\"]\n"
+            + "\tpath = " + path + "\n"
+            + "\turl = https://github.com/Org/" + path.Replace('/', '_') + ".git\n"
+            + "\tbranch = 19.0\n";
+    }
+
+    private static string Link(string path, string sha)
+    {
+        return "160000 commit " + sha + "\t" + path + "\n";
     }
 }
 

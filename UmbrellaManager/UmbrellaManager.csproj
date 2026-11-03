@@ -12,4 +12,8 @@
     <PackageReference Include="Terminal.Gui" Version="2.5.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="UmbrellaManager.Tests" />
+  </ItemGroup>
+
 </Project>

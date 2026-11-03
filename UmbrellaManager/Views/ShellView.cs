@@ -52,6 +52,14 @@ public sealed class ShellView : Window
             Height = Dim.Fill(KeyMap.FooterHeight),
             Visible = false,
         };
+        var loading = new LoadingPane(controller)
+        {
+            X = 0,
+            Y = 0,
+            Width = Dim.Fill(),
+            Height = Dim.Fill(),
+            Visible = false,
+        };
         var status = new StatusLine(controller)
         {
             X = 0,
@@ -74,12 +82,95 @@ public sealed class ShellView : Window
         Add(help);
         Add(setup);
         Add(status);
+        Add(loading);
         KeyMap.Attach(this, controller.Execute);
         controller.QuitRequested += () => app.RequestStop();
+        object? pulse = null;
+        void EnsurePulse()
+        {
+            if (pulse is not null || !app.Initialized)
+            {
+                return;
+            }
+
+            if (!Moving())
+            {
+                return;
+            }
+
+            pulse = app.AddTimeout(TimeSpan.FromMilliseconds(120), () =>
+            {
+                if (!Moving())
+                {
+                    pulse = null;
+                    return false;
+                }
+
+                if (controller.Loading && !controller.LoadingFailed)
+                {
+                    loading.Pulse();
+                }
+
+                if (controller.CheckingRemote || controller.SuccessOpen)
+                {
+                    proposal.Pulse();
+                }
+
+                return true;
+            });
+        }
+
+        bool Moving()
+        {
+            if (controller.CheckingRemote || controller.SuccessOpen)
+            {
+                return true;
+            }
+
+            return controller.Loading && !controller.LoadingFailed;
+        }
+
+        void Reveal()
+        {
+            loading.Visible = false;
+            app.ClearScreenNextIteration = true;
+            tabs.SetNeedsDraw();
+            tree.SetNeedsDraw();
+            graph.SetNeedsDraw();
+            status.SetNeedsDraw();
+            SetNeedsDraw();
+        }
+
         controller.Changed += () =>
         {
+            if (controller.Loading)
+            {
+                loading.Visible = true;
+                help.Visible = false;
+                setup.Visible = false;
+                proposal.Visible = false;
+                EnsurePulse();
+                return;
+            }
+
+            var covered = loading.Visible;
+            loading.Visible = false;
+            if (covered)
+            {
+                Reveal();
+                app.AddTimeout(TimeSpan.FromMilliseconds(30), () =>
+                {
+                    Reveal();
+                    return false;
+                });
+            }
+
             help.Visible = controller.HelpVisible && !controller.SetupOpen;
             setup.Visible = controller.SetupOpen;
+            if (controller.CheckingRemote || controller.SuccessOpen)
+            {
+                EnsurePulse();
+            }
             if (controller.Focus == FocusPane.Graph)
             {
                 if (!graph.HasFocus)
@@ -92,6 +183,14 @@ public sealed class ShellView : Window
                 tree.SetFocus();
             }
         };
-        Initialized += (_, _) => tree.SetFocus();
+        Initialized += (_, _) =>
+        {
+            tree.SetFocus();
+            if (controller.Loading)
+            {
+                loading.Visible = true;
+                EnsurePulse();
+            }
+        };
     }
 }

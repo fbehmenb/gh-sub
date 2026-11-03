@@ -9,6 +9,7 @@ using UmbrellaManager.Services;
 public sealed class PrProposalPane : View
 {
     private readonly SessionController _controller;
+    private int _frame;
 
     public PrProposalPane(SessionController controller)
     {
@@ -20,6 +21,17 @@ public sealed class PrProposalPane : View
             Visible = _controller.PrProposal is { Count: > 0 };
             SetNeedsDraw();
         };
+    }
+
+    public void Pulse()
+    {
+        if (!_controller.CheckingRemote && !_controller.SuccessOpen)
+        {
+            return;
+        }
+
+        _frame++;
+        SetNeedsDraw();
     }
 
     protected override bool OnDrawingContent(DrawContext? context)
@@ -35,7 +47,9 @@ public sealed class PrProposalPane : View
             Painter.Line(this, y, "", new Attribute(Painter.Muted, Painter.Paper));
         }
 
-        var showBar = _controller.PushRunning || _controller.PushDone > 0;
+        var checking = _controller.CheckingRemote;
+        var success = _controller.SuccessOpen;
+        var showBar = checking || success || _controller.PushRunning || _controller.PushDone > 0;
         var longest = 0;
         foreach (var line in lines)
         {
@@ -64,7 +78,10 @@ public sealed class PrProposalPane : View
             var line = shown[index];
             var color = line.Contains("Konflikt", StringComparison.Ordinal)
                 ? danger
-                : line.StartsWith("j ", StringComparison.Ordinal) || line.StartsWith("beliebige", StringComparison.Ordinal)
+                : line.StartsWith("Erfolgreich", StringComparison.Ordinal)
+                    || line.Contains("Taste schließt", StringComparison.Ordinal)
+                    || line.StartsWith("j ", StringComparison.Ordinal)
+                    || line.StartsWith("beliebige", StringComparison.Ordinal)
                     ? ok
                     : line.StartsWith(' ')
                         ? muted
@@ -74,7 +91,11 @@ public sealed class PrProposalPane : View
 
         if (showBar)
         {
-            var bar = PinPublisher.ProgressBar(_controller.PushDone, _controller.PushTotal, textWidth);
+            var bar = success
+                ? LoadMeter.Fill(_controller.SuccessFraction, textWidth)
+                : checking
+                    ? LoadMeter.Running(_frame, textWidth)
+                    : PinPublisher.ProgressBar(_controller.PushDone, _controller.PushTotal, textWidth);
             Painter.Put(this, left + 2, top + height - 2, bar, ok, textWidth);
         }
 

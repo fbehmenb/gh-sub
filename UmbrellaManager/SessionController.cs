@@ -61,6 +61,10 @@ public sealed class SessionController
     private bool _confirming;
     private bool _publishing;
     private bool _resultVisible;
+    private bool _successVisible;
+    private int _successNote;
+    private DateTime _successStarted;
+    internal TimeSpan SuccessHold { get; set; } = TimeSpan.FromSeconds(10);
     private bool _conflict;
     private bool _pulling;
     private bool _loadFailed;
@@ -112,6 +116,36 @@ public sealed class SessionController
     public string GraphMessage { get; private set; } = "";
 
     public string Message { get; private set; } = "keine vorgemerkten Änderungen";
+
+    public bool Loading { get; private set; }
+
+    public bool LoadingFailed { get; private set; }
+
+    public bool CheckingRemote => _confirming && _proposal is null;
+
+    public bool SuccessOpen => _successVisible;
+
+    public double SuccessFraction
+    {
+        get
+        {
+            if (!_successVisible || SuccessHold <= TimeSpan.Zero)
+            {
+                return _successVisible ? 1 : 0;
+            }
+
+            var gone = DateTime.UtcNow - _successStarted;
+            return Math.Clamp(gone.TotalMilliseconds / SuccessHold.TotalMilliseconds, 0, 1);
+        }
+    }
+
+    public bool StartupFailed { get; private set; }
+
+    public string LoadingMessage { get; private set; } = "";
+
+    public int LoadingDone { get; private set; }
+
+    public int LoadingTotal { get; private set; }
 
     public IReadOnlyList<string>? PrProposal { get; private set; }
 
@@ -179,7 +213,9 @@ public sealed class SessionController
                 _conflict,
                 onCommit && module is not null && IsNewerOnSameBranch(Graph[GraphIndex], module.Value.Sha),
                 _setupOpen,
-                onCommit && Graph[GraphIndex].Promotable));
+                onCommit && Graph[GraphIndex].Promotable,
+                CheckingRemote,
+                _successVisible));
         }
     }
 
@@ -198,6 +234,12 @@ public sealed class SessionController
 
     public void Execute(AppCommand command)
     {
+        if (Loading && command != AppCommand.Quit)
+        {
+            Raise();
+            return;
+        }
+
         if (_conflict && command is not (AppCommand.CancelPush or AppCommand.Quit))
         {
             Raise();
@@ -230,12 +272,9 @@ public sealed class SessionController
 
         if (_resultVisible && command != AppCommand.Quit)
         {
-            _resultVisible = false;
-            PrProposal = null;
-            Notice = NoticeTone.Idle;
+            DismissResult(_successVisible);
             if (command is AppCommand.ConfirmPush or AppCommand.CancelPush)
             {
-                Raise();
                 return;
             }
         }
@@ -339,6 +378,21 @@ public sealed class SessionController
     }
 
     public Task LoadCurrentAsync() => LoadBranchAsync(BranchIndex, ++_epoch);
+
+    public void BeginLoading(string message)
+    {
+        _source.Progress = null;
+        Loading = true;
+        LoadingFailed = false;
+        LoadingMessage = message;
+        LoadingDone = 0;
+        LoadingTotal = 4;
+        HelpVisible = false;
+        _setupOpen = false;
+        Raise();
+    }
+
+    public Task StartupAsync() => RefreshAsync(null, true);
 
     public void Cancel()
     {
@@ -579,17 +633,43 @@ public sealed class SessionController
         await LoadBranchAsync(index, ++_epoch).ConfigureAwait(false);
     }
 
-    private async Task ReloadAsync()
+    private Task ReloadAsync()
+    {
+        if (Loading)
+        {
+            return Task.CompletedTask;
+        }
+
+        return RefreshAsync(Selected?.Path, false);
+    }
+
+    private async Task RefreshAsync(string? keepPath, bool startup)
     {
         var epoch = ++_epoch;
-        Say("Lade …");
+        BeginLoading(startup ? "Hole Remote-Branches …" : "Lade neu …");
         var token = Restart();
+        _source.Progress = Detail;
         try
         {
             _source.ClearCache();
             var branches = await _source.LoadBranchesAsync(_pattern, token).ConfigureAwait(false);
             if (epoch != _epoch)
             {
+                return;
+            }
+
+            if (branches.Count == 0)
+            {
+                if (startup)
+                {
+                    FailLoading("Keine Remote-Branches gefunden.");
+                }
+                else
+                {
+                    CloseLoading();
+                    Say("Keine Remote-Branches gefunden.");
+                }
+
                 return;
             }
 
@@ -611,23 +691,53 @@ public sealed class SessionController
             }
 
             var tips = _source.BranchTips;
-            Post(() =>
+            await OnUiAsync(() =>
             {
                 Branches = branches;
                 RememberTips(tips);
-            });
-            await LoadBranchAsync(index, epoch).ConfigureAwait(false);
+            }).ConfigureAwait(false);
+            Advance("Lese Submodule …");
+            await LoadBranchAsync(index, epoch, keepPath).ConfigureAwait(false);
+            if (epoch == _epoch)
+            {
+                CloseLoading();
+            }
         }
         catch (OperationCanceledException)
         {
+            if (epoch == _epoch)
+            {
+                CloseLoading();
+            }
         }
-        catch (UserFacingException ex)
+        catch (Exception ex)
         {
-            Fail(epoch, ex.Message);
+            if (epoch != _epoch)
+            {
+                return;
+            }
+
+            var message = ex is UserFacingException ? ex.Message : GitHub.GitHubText.Redact(ex.Message);
+            if (startup && Branches.Count == 0)
+            {
+                FailLoading(message);
+            }
+            else
+            {
+                CloseLoading();
+                Fail(epoch, message);
+            }
+        }
+        finally
+        {
+            if (epoch == _epoch)
+            {
+                _source.Progress = null;
+            }
         }
     }
 
-    private async Task LoadBranchAsync(int index, int epoch)
+    private async Task LoadBranchAsync(int index, int epoch, string? keepPath = null)
     {
         _loadFailed = false;
         if (Branches.Count == 0)
@@ -652,7 +762,7 @@ public sealed class SessionController
             }
 
             var rows = SubmoduleTree.Flatten(roots, new HashSet<string>(StringComparer.Ordinal));
-            var treeIndex = FirstModule(rows);
+            var treeIndex = PreferredRow(rows, keepPath);
             var selected = treeIndex >= 0 && treeIndex < rows.Count ? rows[treeIndex] : (VisibleRow?)null;
             var module = selected is { IsFolder: false } row ? SubmoduleTree.Find(roots, row.Path) : null;
             Post(() =>
@@ -676,6 +786,11 @@ public sealed class SessionController
                 Message = Status(branch);
                 Raise();
             });
+
+            if (Loading)
+            {
+                Advance(BranchOrder.IsProduction(branch) ? "Prüfe Pins …" : "Lese Branch-Spitze …");
+            }
 
             if (BranchOrder.IsProduction(branch))
             {
@@ -712,6 +827,11 @@ public sealed class SessionController
             if (module is null)
             {
                 return;
+            }
+
+            if (Loading)
+            {
+                Advance("Lade Commits von " + ModuleName(module.Path) + " …");
             }
 
             var loaded = await LoadModuleGraphAsync(branch, module, PendingSha(branch, module.Path), token).ConfigureAwait(false);
@@ -848,14 +968,18 @@ public sealed class SessionController
         Notice = NoticeTone.Info;
         PushDone = 0;
         PushTotal = 0;
-        PrProposal = ["Versionen werden gelesen …"];
-        Say("Versionen werden gelesen …");
+        NoteCheck("Gleich zur Sicherheit den aktuellen Repo-Stand ab …");
         var epoch = _epoch;
         var token = Restart();
         try
         {
             var remoteTip = await _source.FetchBranchTipAsync(branch, token).ConfigureAwait(false);
             var moved = !remoteTip.Equals(loadedTip, StringComparison.OrdinalIgnoreCase);
+            if (moved)
+            {
+                NoteCheck("Prüfe Pins gegen den aktuellen Stand …");
+            }
+
             var clean = new List<PinChange>();
             var conflicts = new List<string>();
             foreach (var change in changes)
@@ -899,6 +1023,7 @@ public sealed class SessionController
                 return;
             }
 
+            NoteCheck("Lese Versionen …");
             var resolved = new List<PinChange>(clean.Count);
             foreach (var change in clean)
             {
@@ -1022,7 +1147,22 @@ public sealed class SessionController
                     Graph = Graph.Select(commit => commit with { Tone = GraphBuilder.Tone(commit.Sha, module.Sha, pending) }).ToList();
                 }
 
+                if (currentTip is not null
+                    && _tips.TryGetValue(branch, out var loaded)
+                    && !currentTip.Equals(loaded, StringComparison.OrdinalIgnoreCase))
+                {
+                    _stale.Add(branch);
+                }
+
                 _publishing = false;
+                _conflict = results.Any(result => result.Conflict);
+                var created = results.Where(result => result.Created).ToList();
+                if (!_conflict && created.Count > 0)
+                {
+                    ShowSuccess(SuccessDetail(created));
+                    return;
+                }
+
                 _resultVisible = true;
                 PushDone = results.Count;
                 PushTotal = results.Count;
@@ -1039,15 +1179,7 @@ public sealed class SessionController
 
                 _pushLines.Add("");
                 _pushLines.Add("beliebige Taste schließt");
-                if (currentTip is not null
-                    && _tips.TryGetValue(branch, out var loaded)
-                    && !currentTip.Equals(loaded, StringComparison.OrdinalIgnoreCase))
-                {
-                    _stale.Add(branch);
-                }
-
-                _conflict = results.Any(result => result.Conflict);
-                Notice = _conflict ? NoticeTone.Conflict : results.Any(result => result.Created) ? NoticeTone.Ok : NoticeTone.Info;
+                Notice = _conflict ? NoticeTone.Conflict : NoticeTone.Info;
                 PrProposal = _pushLines.ToArray();
                 Message = Status(branch);
                 Raise();
@@ -1493,6 +1625,167 @@ public sealed class SessionController
         Raise();
     }
 
+    private Task OnUiAsync(Action action)
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Post(() =>
+        {
+            try
+            {
+                action();
+                done.TrySetResult();
+            }
+            catch (Exception ex)
+            {
+                done.TrySetException(ex);
+            }
+        });
+        return done.Task;
+    }
+
+    private void NoteCheck(string message)
+    {
+        Post(() =>
+        {
+            if (!_confirming || _proposal is not null)
+            {
+                return;
+            }
+
+            PrProposal = [message];
+            Message = message;
+            Raise();
+        });
+    }
+
+    private void ShowSuccess(string detail)
+    {
+        var note = ++_successNote;
+        _successVisible = true;
+        _successStarted = DateTime.UtcNow;
+        _resultVisible = true;
+        _conflict = false;
+        Notice = NoticeTone.Ok;
+        PushDone = 0;
+        PushTotal = 0;
+        PrProposal = ["Erfolgreich", detail, "Taste schließt"];
+        Message = "Erfolgreich. " + detail + "  Taste schließt";
+        Raise();
+        _ = HoldSuccessAsync(note);
+    }
+
+    private async Task HoldSuccessAsync(int note)
+    {
+        await Task.Delay(SuccessHold).ConfigureAwait(false);
+        Post(() =>
+        {
+            if (note != _successNote || !_successVisible)
+            {
+                return;
+            }
+
+            DismissResult(true);
+        });
+    }
+
+    private void DismissResult(bool success)
+    {
+        _resultVisible = false;
+        _successVisible = false;
+        _successNote++;
+        PrProposal = null;
+        if (success || Notice == NoticeTone.Ok)
+        {
+            Notice = NoticeTone.Idle;
+            Message = Status(Branch);
+        }
+        else
+        {
+            Notice = NoticeTone.Idle;
+        }
+
+        Raise();
+    }
+
+    private static string SuccessDetail(IReadOnlyList<PinResult> created)
+    {
+        return string.Join(", ", created.Select(result =>
+        {
+            var mark = result.Text;
+            var split = mark.LastIndexOf("PR ", StringComparison.Ordinal);
+            var number = split >= 0 ? mark[split..] : mark;
+            return number + " · " + ModuleName(result.Path);
+        }));
+    }
+
+    private void Detail(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return;
+        }
+
+        var epoch = _epoch;
+        Post(() =>
+        {
+            if (!Loading || LoadingFailed || epoch != _epoch)
+            {
+                return;
+            }
+
+            LoadingMessage = message;
+            Raise();
+        });
+    }
+
+    private void Advance(string message)
+    {
+        var epoch = _epoch;
+        Post(() =>
+        {
+            if (!Loading || LoadingFailed || epoch != _epoch)
+            {
+                return;
+            }
+
+            LoadingMessage = message;
+            if (LoadingDone < LoadingTotal)
+            {
+                LoadingDone++;
+            }
+
+            Raise();
+        });
+    }
+
+    private void CloseLoading()
+    {
+        Post(() =>
+        {
+            if (!Loading || LoadingFailed)
+            {
+                return;
+            }
+
+            Loading = false;
+            _source.Progress = null;
+            Raise();
+        });
+    }
+
+    private void FailLoading(string message)
+    {
+        StartupFailed = true;
+        Post(() =>
+        {
+            Loading = true;
+            LoadingFailed = true;
+            LoadingMessage = message;
+            _source.Progress = null;
+            Raise();
+        });
+    }
+
     private void Fail(int epoch, string message)
     {
         if (epoch != _epoch)
@@ -1553,6 +1846,22 @@ public sealed class SessionController
 
             IndexModules(node.Children);
         }
+    }
+
+    private static int PreferredRow(IReadOnlyList<VisibleRow> rows, string? path)
+    {
+        if (!string.IsNullOrEmpty(path))
+        {
+            for (var i = 0; i < rows.Count; i++)
+            {
+                if (string.Equals(rows[i].Path, path, StringComparison.Ordinal))
+                {
+                    return i;
+                }
+            }
+        }
+
+        return FirstModule(rows);
     }
 
     private static int FirstModule(IReadOnlyList<VisibleRow> rows)
