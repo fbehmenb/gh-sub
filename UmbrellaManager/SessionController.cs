@@ -25,6 +25,7 @@ public enum AppCommand
     ConfirmPush,
     CancelPush,
     Reload,
+    ReloadAll,
     Quit,
     ShowHelp,
     OpenSetup,
@@ -359,6 +360,9 @@ public sealed class SessionController
 
                 break;
             case AppCommand.Reload:
+                _ = ReloadModuleAsync();
+                break;
+            case AppCommand.ReloadAll:
                 _ = ReloadAsync();
                 break;
             case AppCommand.OpenSetup:
@@ -432,8 +436,8 @@ public sealed class SessionController
             _watchNote = unknown.Count switch
             {
                 0 => null,
-                1 => "Neuer Branch " + unknown[0] + ", r lädt die Tabs.",
-                _ => unknown.Count + " neue Branches, r lädt die Tabs.",
+                1 => "Neuer Branch " + unknown[0] + ", Tab+r lädt die Tabs.",
+                _ => unknown.Count + " neue Branches, Tab+r lädt die Tabs.",
             };
         }
 
@@ -631,6 +635,27 @@ public sealed class SessionController
         }
 
         await LoadBranchAsync(index, ++_epoch).ConfigureAwait(false);
+    }
+
+    private Task ReloadModuleAsync()
+    {
+        if (Loading)
+        {
+            return Task.CompletedTask;
+        }
+
+        if (Selected is not { IsFolder: false } row || !_modules.ContainsKey(row.Path))
+        {
+            Say("Zuerst ein Submodul wählen.");
+            return Task.CompletedTask;
+        }
+
+        if (_modules.TryGetValue(row.Path, out var module))
+        {
+            _source.ClearModule(module);
+        }
+
+        return LoadGraphForAsync(++_epoch, row.Path);
     }
 
     private Task ReloadAsync()
@@ -956,7 +981,7 @@ public sealed class SessionController
 
         if (Branch is null || !_tips.TryGetValue(Branch, out _))
         {
-            Say("Der Stand des Branches ist unbekannt. Bitte mit r neu laden.");
+            Say("Der Stand des Branches ist unbekannt. Bitte mit Tab+r neu laden.");
             return;
         }
 
@@ -1079,7 +1104,7 @@ public sealed class SessionController
             _proposal = null;
             PrProposal = null;
             Notice = NoticeTone.Idle;
-            Say("Der Stand des Branches ist unbekannt. Bitte mit r neu laden.");
+            Say("Der Stand des Branches ist unbekannt. Bitte mit Tab+r neu laden.");
             return;
         }
 

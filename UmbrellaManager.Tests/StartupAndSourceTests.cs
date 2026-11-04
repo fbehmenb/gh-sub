@@ -611,7 +611,7 @@ public class StartupAndSourceTests
         controller.Execute(AppCommand.MoveDown);
 
         Assert.Equal("gb_b", controller.Selected?.Path);
-        controller.Execute(AppCommand.Reload);
+        controller.Execute(AppCommand.ReloadAll);
 
         Assert.Equal("gb_b", controller.Selected?.Path);
         Assert.Equal(NextPin, controller.Selected?.Sha);
@@ -624,11 +624,73 @@ public class StartupAndSourceTests
         var controller = TreeController(dropSelected: true);
         await controller.LoadCurrentAsync();
         controller.Execute(AppCommand.MoveDown);
-        controller.Execute(AppCommand.Reload);
+        controller.Execute(AppCommand.ReloadAll);
 
         Assert.Equal("aaa/gb_c", controller.Selected?.Path);
         Assert.False(controller.Selected?.IsFolder);
         Assert.False(controller.Loading);
+    }
+
+    [Fact]
+    public async Task Reload_refreshes_the_open_module_without_the_umbrella()
+    {
+        var shows = 0;
+        var commits = 0;
+        var controller = TreeController(dropSelected: false, () => shows++, () => commits++);
+        await controller.LoadCurrentAsync();
+        controller.Execute(AppCommand.MoveDown);
+        var showsAfterOpen = shows;
+        var commitsAfterOpen = commits;
+
+        controller.Execute(AppCommand.Reload);
+
+        Assert.Equal("gb_b", controller.Selected?.Path);
+        Assert.Equal(Pin, controller.Selected?.Sha);
+        Assert.Equal(showsAfterOpen, shows);
+        Assert.True(commits > commitsAfterOpen);
+        Assert.False(controller.Loading);
+    }
+
+    [Fact]
+    public async Task Default_branch_is_shown_when_it_matches_the_tracked_tip()
+    {
+        const string sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        var process = new ScriptedProcess((_, args) =>
+        {
+            var joined = string.Join(' ', args);
+            if (joined.Contains("graphql"))
+            {
+                return new ProcessResult(0, """
+                    {"data":{"repository":{"refs":{"nodes":[
+                      {"name":"19.0","target":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","committedDate":"2026-10-21T17:53:49Z"}},
+                      {"name":"20.0","target":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","committedDate":"2026-10-21T17:53:49Z"}}
+                    ]}}}}
+                    """, "");
+            }
+
+            if (joined.Contains("commits"))
+            {
+                return new ProcessResult(0, "[" + Commit(sha, "spitze", "2026-10-21T17:53:49Z") + "]", "");
+            }
+
+            if (args.Contains("repos/Org/gb_activity_actions"))
+            {
+                return new ProcessResult(0, "{\"default_branch\":\"20.0\"}", "");
+            }
+
+            return new ProcessResult(0, "", "");
+        });
+        var source = new UmbrellaSource(process, new ResponseCache(), "C:\\repo");
+        var module = new SubmoduleEntry(
+            "gb_modules/gb_activity_actions",
+            sha,
+            "https://github.com/Org/gb_activity_actions.git",
+            "19.0");
+
+        var snapshot = await source.LoadGraphAsync(module, CancellationToken.None);
+
+        Assert.Equal(["19.0", "20.0"], snapshot.Lanes);
+        Assert.Contains(snapshot.Rows, row => row.Names is not null && row.Names.Contains("20.0"));
     }
 
     [Fact]
@@ -719,7 +781,7 @@ public class StartupAndSourceTests
         Assert.True(controller.LoadingFailed);
         Assert.True(controller.StartupFailed);
         Assert.Contains("Keine Remote-Branches", controller.LoadingMessage);
-        controller.Execute(AppCommand.Reload);
+        controller.Execute(AppCommand.ReloadAll);
         controller.Execute(AppCommand.MoveDown);
         Assert.True(controller.LoadingFailed);
     }
@@ -728,7 +790,7 @@ public class StartupAndSourceTests
 
     private const string NextPin = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-    private static SessionController TreeController(bool dropSelected)
+    private static SessionController TreeController(bool dropSelected, Action? onShow = null, Action? onCommits = null)
     {
         var generation = 0;
         var process = new ScriptedProcess((_, args) =>
@@ -741,6 +803,7 @@ public class StartupAndSourceTests
 
             if (joined.Contains("show"))
             {
+                onShow?.Invoke();
                 generation++;
                 var reload = generation > 1;
                 if (reload && dropSelected)
@@ -765,6 +828,7 @@ public class StartupAndSourceTests
 
             if (joined.Contains("commits"))
             {
+                onCommits?.Invoke();
                 return new ProcessResult(
                     0,
                     "[" + Commit(Pin, "aktuell", "2026-10-01T00:00:00Z") + "," + Commit(NextPin, "danach", "2026-10-02T00:00:00Z") + "]",

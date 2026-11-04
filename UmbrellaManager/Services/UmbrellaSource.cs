@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace UmbrellaManager.Services;
 
 using UmbrellaManager.GitHub;
@@ -31,6 +33,18 @@ public sealed class UmbrellaSource
     {
         _cache.Clear();
         Offline = false;
+    }
+
+    public void ClearModule(SubmoduleEntry module)
+    {
+        var repo = GitHubRepo.FromUrl(module.Url);
+        if (repo is null)
+        {
+            return;
+        }
+
+        var marker = repo.Owner + "/" + repo.Name;
+        _cache.Drop(key => BelongsToRepo(key, marker));
     }
 
     public async Task<string?> ModuleVersionAsync(string? moduleUrl, string sha, CancellationToken cancellationToken)
@@ -427,7 +441,14 @@ public sealed class UmbrellaSource
         }
 
         Pulse("Lese Branches von " + Leaf(module.Path) + " …");
-        var tips = await BranchesAsync(repo, cancellationToken).ConfigureAwait(false);
+        var tips = (await BranchesAsync(repo, cancellationToken).ConfigureAwait(false)).ToList();
+        var defaultName = await TryDefaultBranchAsync(repo, cancellationToken).ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(defaultName)
+            && !defaultName.Equals(standardName, StringComparison.Ordinal)
+            && !tips.Any(tip => tip.Name.Equals(defaultName, StringComparison.Ordinal)))
+        {
+            tips.Add(new BranchTip(defaultName, "", null, false));
+        }
         var matched = tips.Where(tip => tip.Name == standardName).Take(1).ToArray();
         var fallbackCommit = standardCommits.Count == 0 ? default : standardCommits[0];
         var standardTip = matched.Length == 1
@@ -445,12 +466,20 @@ public sealed class UmbrellaSource
 
         var known = marked.Count == 0 ? tips : MergeTips(tips, marked);
         var standardShas = standardCommits.Select(commit => commit.Sha).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var extra = GraphBuilder.SelectExtraLanes(standardTip, pinOnStandard, known, standardShas);
+        var extra = GraphBuilder.SelectExtraLanes(standardTip, pinOnStandard, known, standardShas, defaultName);
+        var shown = new List<BranchTip>();
         var extraCommits = new List<(string Name, IReadOnlyList<CommitInfo> Commits)>();
         foreach (var lane in extra)
         {
             Pulse("Lade Branch " + lane.Name + " …");
-            extraCommits.Add((lane.Name, await CommitsAsync(repo, lane.Name, cancellationToken).ConfigureAwait(false)));
+            var commits = await CommitsAsync(repo, lane.Name, cancellationToken).ConfigureAwait(false);
+            if (commits.Count == 0 && lane.TipSha.Length == 0)
+            {
+                continue;
+            }
+
+            shown.Add(lane);
+            extraCommits.Add((lane.Name, commits));
         }
 
         standardCommits = await WithListedCommitAsync(repo, standardCommits, extraCommits, module.Sha, cancellationToken)
@@ -459,9 +488,9 @@ public sealed class UmbrellaSource
             .ConfigureAwait(false);
 
         var lanes = new List<string> { standardName };
-        lanes.AddRange(extra.Select(lane => lane.Name));
+        lanes.AddRange(shown.Select(lane => lane.Name));
         var rows = GraphBuilder.Build(standardName, standardCommits, extraCommits, module.Sha, pendingSha);
-        var message = extra.Count == GraphBuilder.MaxExtraLanes ? "Weitere Branches sind nicht als Spuren gezeigt." : "";
+        var message = shown.Count == GraphBuilder.MaxExtraLanes ? "Weitere Branches sind nicht als Spuren gezeigt." : "";
         return new GraphSnapshot(lanes, rows, message);
     }
 
@@ -535,6 +564,31 @@ public sealed class UmbrellaSource
     {
         var json = await ApiAsync($"repos/{Escape(repo.Owner)}/{Escape(repo.Name)}", cancellationToken).ConfigureAwait(false);
         return GitHubParse.ParseDefaultBranch(json);
+    }
+
+    private async Task<string?> TryDefaultBranchAsync(GitHubRepo repo, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await DefaultBranchAsync(repo, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is UserFacingException or JsonException)
+        {
+            // Der Graph bleibt am Branch aus .gitmodules, wenn der Default-Branch nicht lesbar ist.
+            return null;
+        }
+    }
+
+    private static bool BelongsToRepo(string key, string marker)
+    {
+        var index = key.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (index < 0)
+        {
+            return false;
+        }
+
+        var end = index + marker.Length;
+        return end == key.Length || key[end] is '/' or '?' or '&';
     }
 
     private async Task<IReadOnlyList<CommitInfo>> CommitsAsync(GitHubRepo repo, string branch, CancellationToken cancellationToken)

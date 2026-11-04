@@ -1,5 +1,6 @@
 using System.Text;
 using Terminal.Gui.App;
+using Terminal.Gui.Input;
 
 namespace UmbrellaManager;
 
@@ -71,8 +72,10 @@ public static class AppHost
             var controller = new SessionController(source, [], config.HiddenBranchPattern, config.PinTitle);
             var setup = UserSetup.Load(UserSetup.DefaultFilePath, out _);
             controller.UseSetup(UserSetup.DefaultFilePath, setup?.PollIntervalSeconds);
+            Application.RemoveDefaultKeyBinding(Command.Quit);
             IApplication app = Application.Create();
             app.Init();
+            Application.RemoveDefaultKeyBinding(Command.Quit);
             controller.Post = action => app.Invoke(action);
             using var shell = new ShellView(controller, app);
             controller.BeginLoading("Hole Remote-Branches …");

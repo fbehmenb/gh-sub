@@ -183,13 +183,74 @@ public class ReadingTests
         var keys = KeyMap.Bindings.Select(binding => binding.Key).ToArray();
         Assert.Equal(keys.Length, keys.Distinct().Count());
         Assert.Equal(
-            ["Shift+Tab", "Tab", "Left", "Right", "Up", "Down", "Space", "Enter", "A", "Delete", "C", "P", "J", "N", "S", "U", "R", "Q", "?"],
+            ["Shift+Tab", "Tab", "Left", "Right", "Up", "Down", "Space", "Enter", "A", "Delete", "C", "P", "J", "N", "S", "U", "R", "Tab+R", "Q", "?"],
             keys);
         Assert.Equal(keys.Length, KeyMap.Bindings.Select(binding => binding.Command).Distinct().Count());
         Assert.Equal(AppCommand.NextBranch, KeyMap.Match(Key.Tab));
         Assert.Equal(AppCommand.PreviousBranch, KeyMap.Match(Key.Tab.WithShift));
         Assert.Equal(AppCommand.FocusTree, KeyMap.Match(Key.CursorLeft));
         Assert.Equal(AppCommand.FocusGraph, KeyMap.Match(Key.CursorRight));
+        Assert.Equal(AppCommand.Reload, KeyMap.Match(Key.R));
+        Assert.Null(KeyMap.Match(Key.Esc));
+    }
+
+    [Fact]
+    public void Tab_and_r_reloads_everything_and_escape_does_not_quit()
+    {
+        var held = new TabHold();
+        Assert.True(held.Press(Key.Tab).Handled);
+        Assert.Equal(AppCommand.ReloadAll, held.Press(Key.R).Command);
+        Assert.False(held.Active);
+
+        var grace = new TabHold();
+        grace.Press(Key.Tab);
+        Assert.True(grace.Release(Key.Tab).Reschedule);
+        Assert.Equal(TabHold.Grace, grace.Due);
+        Assert.Equal(AppCommand.ReloadAll, grace.Press(Key.R).Command);
+        Assert.Null(grace.Due);
+
+        var expired = new TabHold();
+        expired.Press(Key.Tab);
+        expired.Release(Key.Tab);
+        Assert.Equal(AppCommand.NextBranch, expired.Expire().Command);
+        Assert.False(expired.Active);
+
+        var cancel = new TabHold();
+        cancel.Press(Key.Tab);
+        var escaped = cancel.Press(Key.Esc);
+        Assert.True(escaped.Handled);
+        Assert.Null(escaped.Command);
+        Assert.False(cancel.Active);
+
+        var plain = new TabHold();
+        var reload = plain.Press(Key.R);
+        Assert.False(reload.Handled);
+        Assert.True(reload.MatchAfter);
+        Assert.Null(KeyMap.Match(Key.Esc));
+    }
+
+    [Fact]
+    public void Default_branch_stays_a_lane_when_it_points_at_the_same_commit()
+    {
+        var day = new DateTimeOffset(2026, 10, 21, 17, 53, 49, TimeSpan.Zero);
+        var standard = new BranchTip("19.0", Pin, day, false);
+        var branches = new[]
+        {
+            standard,
+            new BranchTip("20.0", Pin, day, false),
+            new BranchTip("old", Other, day.AddDays(-2), false),
+        };
+        var shas = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { Pin };
+
+        Assert.Empty(GraphBuilder.SelectExtraLanes(standard, pinOnStandard: true, branches, shas));
+        var lanes = GraphBuilder.SelectExtraLanes(standard, pinOnStandard: true, branches, shas, "20.0");
+        Assert.Equal(["20.0"], lanes.Select(lane => lane.Name).ToArray());
+
+        var commit = new CommitInfo(Pin, "spitze", day);
+        var rows = GraphBuilder.Build("19.0", [commit], [("20.0", [commit])], Pin, null);
+        var names = Assert.Single(rows).Names;
+        Assert.NotNull(names);
+        Assert.Equal(["19.0", "20.0"], names);
     }
 
     [Fact]
@@ -203,6 +264,8 @@ public class ReadingTests
 
         Assert.Contains("nächster Tab", help);
         Assert.Contains("vorheriger Tab", help);
+        Assert.Contains("dieses Submodul neu laden", help);
+        Assert.Contains("Tab+r", help);
         Assert.Equal(1, KeyMap.FooterHeight);
         Assert.Equal("? Hilfe", KeyMap.HelpHint);
     }

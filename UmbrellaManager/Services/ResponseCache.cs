@@ -27,4 +27,15 @@ public sealed class ResponseCache
             _values[key] = value;
         }
     }
+
+    public void Drop(Func<string, bool> match)
+    {
+        lock (_values)
+        {
+            foreach (var key in _values.Keys.Where(match).ToArray())
+            {
+                _values.Remove(key);
+            }
+        }
+    }
 }

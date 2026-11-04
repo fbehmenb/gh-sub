@@ -83,7 +83,17 @@ public sealed class ShellView : Window
         Add(setup);
         Add(status);
         Add(loading);
-        KeyMap.Attach(this, controller.Execute);
+        KeyMap.Attach(
+            this,
+            controller.Execute,
+            (delay, callback) => app.AddTimeout(delay, callback),
+            token =>
+            {
+                if (token is not null)
+                {
+                    app.RemoveTimeout(token);
+                }
+            });
         controller.QuitRequested += () => app.RequestStop();
         object? pulse = null;
         void EnsurePulse()

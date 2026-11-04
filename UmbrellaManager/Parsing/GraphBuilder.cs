@@ -10,12 +10,14 @@ public static class GraphBuilder
         BranchTip standard,
         bool pinOnStandard,
         IReadOnlyList<BranchTip> branches,
-        IReadOnlySet<string> standardShas)
+        IReadOnlySet<string> standardShas,
+        string? keepName = null)
     {
         var selected = branches
             .Where(branch => !branch.Name.Equals(standard.Name, StringComparison.Ordinal))
-            .Where(branch => Include(branch, standard, pinOnStandard, standardShas))
-            .OrderByDescending(branch => branch.PinIsOnBranch)
+            .Where(branch => Keep(branch, keepName) || Include(branch, standard, pinOnStandard, standardShas))
+            .OrderByDescending(branch => Keep(branch, keepName))
+            .ThenByDescending(branch => branch.PinIsOnBranch)
             .ThenByDescending(branch => branch.TipDate ?? DateTimeOffset.MinValue)
             .ThenBy(branch => branch.Name, StringComparer.Ordinal)
             .Take(MaxExtraLanes)
@@ -177,6 +179,11 @@ public static class GraphBuilder
             PinMark.Staging => "staging",
             _ => "",
         };
+    }
+
+    private static bool Keep(BranchTip branch, string? keepName)
+    {
+        return keepName is not null && branch.Name.Equals(keepName, StringComparison.Ordinal);
     }
 
     private static bool Include(BranchTip branch, BranchTip standard, bool pinOnStandard, IReadOnlySet<string> standardShas)
