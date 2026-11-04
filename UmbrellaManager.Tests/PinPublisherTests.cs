@@ -21,11 +21,14 @@ public class PinPublisherTests
         Assert.Equal("dev", PinPublisher.Stage("dev/19.0"));
         Assert.Equal("staging", PinPublisher.Stage("19.0-staging"));
         Assert.Equal(
-            "[REL] gb_documents_archive: 19.0.1.8.14",
+            "[REL dev/19.0] gb_documents_archive: 19.0.1.8.14",
             PinPublisher.Title(LocalConfig.DefaultPinTitle, change, "dev/19.0"));
         Assert.Equal(
-            "[REL] gb_documents_archive: 8847dd1",
+            "[REL staging/19.0] gb_documents_archive: 8847dd1",
             PinPublisher.Title(LocalConfig.DefaultPinTitle, change with { Version = null }, "staging/19.0"));
+        Assert.Equal(
+            "dev gb_documents_archive",
+            PinPublisher.Title("<stufe> <modul>", change, "dev/19.0"));
         Assert.Contains("Quelle: staging/19.0", PinPublisher.Body(change, "production/19.0"));
         Assert.DoesNotContain("Quelle:", PinPublisher.Body(change, "dev/19.0"));
     }
@@ -173,8 +176,8 @@ public class PinPublisherTests
             Assert.All(pulls, args => Assert.Contains("dev/19.0", args));
             Assert.Contains(pulls, args => args.Any(argument => argument.Contains("chore/pin-gb_a-", StringComparison.Ordinal)));
             Assert.Contains(pulls, args => args.Any(argument => argument.Contains("chore/pin-gb_b-", StringComparison.Ordinal)));
-            Assert.Contains(pulls, args => args.Contains("[REL] gb_a: 2222222"));
-            Assert.Contains(pulls, args => args.Contains("[REL] gb_b: 3333333"));
+            Assert.Contains(pulls, args => args.Contains("[REL dev/19.0] gb_a: 2222222"));
+            Assert.Contains(pulls, args => args.Contains("[REL dev/19.0] gb_b: 3333333"));
             Assert.DoesNotContain(git.Calls, args => args.Contains("--force") || args.Contains("-f"));
 
             var first = RemoteHead(await Git(git, work, "ls-remote", "origin", "refs/heads/chore/pin-gb_a-" + newA[..7] + "-dev/19.0"));

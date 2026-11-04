@@ -16,6 +16,8 @@ public enum AppCommand
     FocusGraph,
     MoveUp,
     MoveDown,
+    PreviousModule,
+    NextModule,
     ToggleFolder,
     StagePin,
     ChooseNewer,
@@ -313,6 +315,12 @@ public sealed class SessionController
             case AppCommand.MoveDown:
                 Move(1);
                 break;
+            case AppCommand.PreviousModule:
+                MoveModule(-1);
+                break;
+            case AppCommand.NextModule:
+                MoveModule(1);
+                break;
             case AppCommand.ToggleFolder:
                 ToggleFolder();
                 break;
@@ -437,8 +445,8 @@ public sealed class SessionController
             _watchNote = unknown.Count switch
             {
                 0 => null,
-                1 => "Neuer Branch " + unknown[0] + ", Tab+r lädt die Tabs.",
-                _ => unknown.Count + " neue Branches, Tab+r lädt die Tabs.",
+                1 => "Neuer Branch " + unknown[0] + ", Umschalt+r lädt die Tabs.",
+                _ => unknown.Count + " neue Branches, Umschalt+r lädt die Tabs.",
             };
         }
 
@@ -920,6 +928,38 @@ public sealed class SessionController
         }
     }
 
+    private void MoveModule(int delta)
+    {
+        var rows = Rows;
+        if (rows.Count == 0 || delta == 0)
+        {
+            return;
+        }
+
+        var found = -1;
+        for (var index = TreeIndex + delta; index >= 0 && index < rows.Count; index += delta)
+        {
+            if (!rows[index].IsFolder)
+            {
+                found = index;
+                break;
+            }
+        }
+
+        if (found < 0)
+        {
+            return;
+        }
+
+        var previous = Selected?.Path;
+        TreeIndex = found;
+        Raise();
+        if (Selected is { IsFolder: false } row && row.Path != previous)
+        {
+            _ = LoadGraphForAsync(++_epoch, row.Path);
+        }
+    }
+
     private async Task LoadGraphForAsync(int epoch, string path)
     {
         Post(() =>
@@ -982,7 +1022,7 @@ public sealed class SessionController
 
         if (Branch is null || !_tips.TryGetValue(Branch, out _))
         {
-            Say("Der Stand des Branches ist unbekannt. Bitte mit Tab+r neu laden.");
+            Say("Der Stand des Branches ist unbekannt. Bitte mit Umschalt+r neu laden.");
             return;
         }
 
@@ -1105,7 +1145,7 @@ public sealed class SessionController
             _proposal = null;
             PrProposal = null;
             Notice = NoticeTone.Idle;
-            Say("Der Stand des Branches ist unbekannt. Bitte mit Tab+r neu laden.");
+            Say("Der Stand des Branches ist unbekannt. Bitte mit Umschalt+r neu laden.");
             return;
         }
 

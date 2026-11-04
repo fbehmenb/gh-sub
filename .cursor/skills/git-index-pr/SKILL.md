@@ -25,7 +25,7 @@ git push origin $commit:refs/heads/chore/pin-<modul>-<sha7>-<tab>
 gh pr create --base <tab-branch> --head chore/pin-<modul>-<sha7>-<tab> --title "<titel>" --body "<body>"
 ```
 
-5. Titel-Default: `[REL] <modul>: <version>`. `[REL]` ist der Odoo-Tag für ein Release. Die Version steht in `__manifest__.py` des gepinnten Commits. Fehlt sie, steht die Kurz-SHA. Body: alter Pin, neuer Pin, Branch des Moduls, Link auf den Commit.
+5. Titel-Default: `[REL <ziel>] <modul>: <version>`. `[REL]` ist der Odoo-Tag für ein Release. `<ziel>` ist der Umbrella-Branch, in den der PR gemerged wird. Die Version steht in `__manifest__.py` des gepinnten Commits. Fehlt sie, steht die Kurz-SHA. Body: alter Pin, neuer Pin, Branch des Moduls, Link auf den Commit.
 6. Hinzufügen zusätzlich: `.gitmodules` als Blob (`git hash-object -w --stdin`), `update-index --cacheinfo 100644,<blob>,.gitmodules` und den Gitlink. Titel-Default: `feat(<modul>): Submodul hinzufügen (<branch>@<sha7>)`.
 7. Entfernen zusätzlich: `update-index --force-remove <pfad>` und den Abschnitt aus `.gitmodules` streichen. Titel-Default: `chore(<modul>): Submodul entfernen`.
 8. Fehler je PR melden. Die übrigen PRs weiterlaufen lassen.

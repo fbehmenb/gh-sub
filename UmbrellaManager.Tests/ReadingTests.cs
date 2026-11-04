@@ -183,49 +183,19 @@ public class ReadingTests
         var keys = KeyMap.Bindings.Select(binding => binding.Key).ToArray();
         Assert.Equal(keys.Length, keys.Distinct().Count());
         Assert.Equal(
-            ["Shift+Tab", "Tab", "Left", "Right", "Up", "Down", "Space", "Enter", "A", "Delete", "C", "P", "J", "N", "S", "U", "R", "Tab+R", "Q", "?"],
+            ["Shift+Tab", "Tab", "Left", "Right", "Up", "Down", "PageUp", "PageDown", "Space", "Enter", "A", "Delete", "C", "P", "J", "N", "S", "U", "R", "Shift+R", "Q", "?"],
             keys);
         Assert.Equal(keys.Length, KeyMap.Bindings.Select(binding => binding.Command).Distinct().Count());
         Assert.Equal(AppCommand.NextBranch, KeyMap.Match(Key.Tab));
         Assert.Equal(AppCommand.PreviousBranch, KeyMap.Match(Key.Tab.WithShift));
         Assert.Equal(AppCommand.FocusTree, KeyMap.Match(Key.CursorLeft));
         Assert.Equal(AppCommand.FocusGraph, KeyMap.Match(Key.CursorRight));
+        Assert.Equal(AppCommand.MoveUp, KeyMap.Match(Key.CursorUp));
+        Assert.Equal(AppCommand.MoveDown, KeyMap.Match(Key.CursorDown));
+        Assert.Equal(AppCommand.PreviousModule, KeyMap.Match(Key.PageUp));
+        Assert.Equal(AppCommand.NextModule, KeyMap.Match(Key.PageDown));
         Assert.Equal(AppCommand.Reload, KeyMap.Match(Key.R));
-        Assert.Null(KeyMap.Match(Key.Esc));
-    }
-
-    [Fact]
-    public void Tab_and_r_reloads_everything_and_escape_does_not_quit()
-    {
-        var held = new TabHold();
-        Assert.True(held.Press(Key.Tab).Handled);
-        Assert.Equal(AppCommand.ReloadAll, held.Press(Key.R).Command);
-        Assert.False(held.Active);
-
-        var grace = new TabHold();
-        grace.Press(Key.Tab);
-        Assert.True(grace.Release(Key.Tab).Reschedule);
-        Assert.Equal(TabHold.Grace, grace.Due);
-        Assert.Equal(AppCommand.ReloadAll, grace.Press(Key.R).Command);
-        Assert.Null(grace.Due);
-
-        var expired = new TabHold();
-        expired.Press(Key.Tab);
-        expired.Release(Key.Tab);
-        Assert.Equal(AppCommand.NextBranch, expired.Expire().Command);
-        Assert.False(expired.Active);
-
-        var cancel = new TabHold();
-        cancel.Press(Key.Tab);
-        var escaped = cancel.Press(Key.Esc);
-        Assert.True(escaped.Handled);
-        Assert.Null(escaped.Command);
-        Assert.False(cancel.Active);
-
-        var plain = new TabHold();
-        var reload = plain.Press(Key.R);
-        Assert.False(reload.Handled);
-        Assert.True(reload.MatchAfter);
+        Assert.Equal(AppCommand.ReloadAll, KeyMap.Match(Key.R.WithShift));
         Assert.Null(KeyMap.Match(Key.Esc));
     }
 
@@ -267,8 +237,9 @@ public class ReadingTests
 
         Assert.Contains("nächster Tab", help);
         Assert.Contains("vorheriger Tab", help);
-        Assert.Contains("dieses Submodul neu laden", help);
-        Assert.Contains("Tab+r", help);
+        Assert.Contains("Bild↑", help);
+        Assert.Contains("Bild↓", help);
+        Assert.Contains("Umschalt+r", help);
         Assert.Equal(1, KeyMap.FooterHeight);
         Assert.Equal("? Hilfe", KeyMap.HelpHint);
     }

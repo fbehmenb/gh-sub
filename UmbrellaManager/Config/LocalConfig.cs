@@ -6,7 +6,9 @@ public sealed record LocalConfig(string HiddenBranchPattern, string PinTitle)
 {
     public const string FileName = "umbrella-manager.local.json";
 
-    public const string DefaultPinTitle = "[REL] <modul>: <version>";
+    public const string DefaultPinTitle = "[REL <ziel>] <modul>: <version>";
+
+    private static readonly string[] RetiredPinTitles = ["[REL] <modul>: <version>"];
 
     public static LocalConfig Default { get; } = new("chore/pin-*", DefaultPinTitle);
 
@@ -29,7 +31,7 @@ public sealed record LocalConfig(string HiddenBranchPattern, string PinTitle)
             {
                 using var document = JsonDocument.Parse(File.ReadAllText(path));
                 var pattern = ReadString(document.RootElement, "hiddenBranchPattern") ?? Default.HiddenBranchPattern;
-                var title = ReadString(document.RootElement, "pinTitle") ?? Default.PinTitle;
+                var title = CurrentPinTitle(ReadString(document.RootElement, "pinTitle"));
                 return (new LocalConfig(pattern, title), null);
             }
             catch (JsonException)
@@ -39,6 +41,16 @@ public sealed record LocalConfig(string HiddenBranchPattern, string PinTitle)
         }
 
         return (Default, null);
+    }
+
+    private static string CurrentPinTitle(string? stored)
+    {
+        if (stored is null || RetiredPinTitles.Contains(stored, StringComparer.Ordinal))
+        {
+            return DefaultPinTitle;
+        }
+
+        return stored;
     }
 
     private static string? ReadString(JsonElement root, string name)

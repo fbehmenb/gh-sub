@@ -652,6 +652,73 @@ public class StartupAndSourceTests
     }
 
     [Fact]
+    public async Task Page_keys_step_through_modules_and_leave_commit_navigation_in_place()
+    {
+        var process = new ScriptedProcess((_, args) =>
+        {
+            var joined = string.Join(' ', args);
+            if (joined.Contains("show"))
+            {
+                return new ProcessResult(0, Modules("aaa/gb_c") + Modules("gb_a"), "");
+            }
+
+            if (joined.Contains("ls-tree"))
+            {
+                return new ProcessResult(0, Link("aaa/gb_c", Pin) + Link("gb_a", Pin), "");
+            }
+
+            if (joined.Contains("commits"))
+            {
+                return new ProcessResult(
+                    0,
+                    "[" + Commit(Pin, "aktuell", "2026-10-01T00:00:00Z") + "," + Commit(NextPin, "danach", "2026-10-02T00:00:00Z") + "]",
+                    "");
+            }
+
+            if (joined.Contains("graphql"))
+            {
+                return new ProcessResult(0, Heads("19.0", Pin, "2026-10-01T00:00:00Z"), "");
+            }
+
+            if (joined.Contains("rev-parse") && joined.Contains("origin/dev/19.0") && !joined.Contains(':'))
+            {
+                return new ProcessResult(0, Pin + "\n", "");
+            }
+
+            if (joined.Contains("get-url"))
+            {
+                return new ProcessResult(0, "https://github.com/Org/odoo_umbrella\n", "");
+            }
+
+            return new ProcessResult(0, "", "");
+        });
+        var controller = new SessionController(new UmbrellaSource(process, new ResponseCache(), "C:\\repo"), ["dev/19.0"], "chore/pin-*");
+        await controller.LoadCurrentAsync();
+
+        Assert.Equal("aaa/gb_c", controller.Selected?.Path);
+        controller.Execute(AppCommand.FocusTree);
+        controller.Execute(AppCommand.MoveUp);
+        Assert.True(controller.Selected?.IsFolder);
+        controller.Execute(AppCommand.FocusGraph);
+        controller.Execute(AppCommand.NextModule);
+
+        Assert.Equal("aaa/gb_c", controller.Selected?.Path);
+        Assert.Equal(FocusPane.Graph, controller.Focus);
+        controller.Execute(AppCommand.NextModule);
+        Assert.Equal("gb_a", controller.Selected?.Path);
+        Assert.Equal(FocusPane.Graph, controller.Focus);
+
+        var commit = controller.GraphIndex;
+        controller.Execute(AppCommand.MoveUp);
+        Assert.Equal("gb_a", controller.Selected?.Path);
+        Assert.NotEqual(commit, controller.GraphIndex);
+
+        controller.Execute(AppCommand.PreviousModule);
+        Assert.Equal("aaa/gb_c", controller.Selected?.Path);
+        Assert.Equal(FocusPane.Graph, controller.Focus);
+    }
+
+    [Fact]
     public async Task Default_branch_is_shown_when_it_matches_the_tracked_tip()
     {
         const string sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

@@ -65,6 +65,7 @@ public sealed class PinPublisher
             .Replace("<sha7>", Sha.Short(change.NewSha), StringComparison.Ordinal)
             .Replace("<modul-branch>", branch, StringComparison.Ordinal)
             .Replace("<version>", version, StringComparison.Ordinal)
+            .Replace("<ziel>", tab, StringComparison.Ordinal)
             .Replace("<stufe>", Stage(tab), StringComparison.Ordinal);
     }
 

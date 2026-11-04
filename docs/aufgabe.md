@@ -58,7 +58,7 @@ gh pr create --base <tab-branch> --head chore/pin-<modul>-<sha7>-<tab> --title "
 ```
 
 - Vorher `git fetch` des Tab-Branches. Hat sich der Gitlink eines vorgemerkten Pfads geändert, wird dieser Pin nicht gepusht. Ist der Tip nur weitergelaufen, setzt der Commit auf `origin/<tab-branch>` auf.
-- Titel-Vorlage in der Konfiguration, Default im Odoo-Format: `[REL] <modul>: <version>`. `[REL]` ist der Odoo-Tag für ein Release. Die Version kommt aus `__manifest__.py` des gepinnten Commits. Fehlt sie, steht die Kurz-SHA. Die Stufe steckt im Zielbranch des PRs.
+- Titel-Vorlage in der Konfiguration, Default im Odoo-Format: `[REL <ziel>] <modul>: <version>`. `[REL]` ist der Odoo-Tag für ein Release. `<ziel>` ist der Umbrella-Branch, in den der PR gemerged wird, zum Beispiel `dev/20.0`. Die Version kommt aus `__manifest__.py` des gepinnten Commits. Fehlt sie, steht die Kurz-SHA. `<stufe>` bleibt als Platzhalter für `dev`, `staging` oder `production`. Eine gespeicherte Vorlage, die einem früheren Default entspricht, wird beim Laden auf den aktuellen Default gehoben. Eine eigene Vorlage bleibt.
 - Body: alter Pin → neuer Pin, Branch des Moduls, Link auf den Commit. Ein Production-Pin nennt zusätzlich den Staging-Branch als Quelle.
 - Ergebnis je PR anzeigen (URL), Fehler je PR einzeln melden, restliche PRs weiterlaufen lassen.
 
