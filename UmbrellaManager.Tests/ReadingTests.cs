@@ -246,11 +246,14 @@ public class ReadingTests
         var lanes = GraphBuilder.SelectExtraLanes(standard, pinOnStandard: true, branches, shas, "20.0");
         Assert.Equal(["20.0"], lanes.Select(lane => lane.Name).ToArray());
 
-        var commit = new CommitInfo(Pin, "spitze", day);
-        var rows = GraphBuilder.Build("19.0", [commit], [("20.0", [commit])], Pin, null);
-        var names = Assert.Single(rows).Names;
+        var parent = new CommitInfo(Other, "darunter", day.AddDays(-1));
+        var commit = new CommitInfo(Pin, "spitze", day, Parents: [Other]);
+        var rows = GraphBuilder.Build("19.0", [commit, parent], [("20.0", [commit])], Pin, null);
+        var names = rows[0].Names;
         Assert.NotNull(names);
         Assert.Equal(["19.0", "20.0"], names);
+        Assert.Equal("20.0", CommitGraph.ForkLabel(rows[0]));
+        Assert.Equal(["●─● ", "│ ", "● "], Picture(rows));
     }
 
     [Fact]
@@ -286,6 +289,10 @@ public class ReadingTests
         var current = RowHint.Describe(new RowHintInput(
             false, false, false, false, false, FocusPane.Graph, false, true, false, true, CommitTone.DarkGreen, true, true));
         Assert.Contains("Entf Vormerkung entfernen", current);
+
+        var fork = RowHint.Describe(new RowHintInput(
+            false, false, false, false, false, FocusPane.Graph, false, true, false, true, CommitTone.Gray, false, false, ForkBranch: "20.0"));
+        Assert.Contains("Enter diesen Commit vormerken · 20.0", fork);
 
         var newer = RowHint.Describe(new RowHintInput(
             false, false, false, false, false, FocusPane.Graph, false, true, false, true, CommitTone.Gray, false, false, false, true));
@@ -503,7 +510,7 @@ public class ReadingTests
         var lines = new List<string>();
         for (var i = 0; i < rows.Count; i++)
         {
-            lines.Add(Line(CommitGraph.Paint(rows[i].Cells)));
+            lines.Add(Line(CommitGraph.PaintRow(rows[i])));
             if (i + 1 < rows.Count)
             {
                 lines.Add(Line(CommitGraph.PaintLink(rows[i + 1].Cells)));

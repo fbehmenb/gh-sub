@@ -37,6 +37,58 @@ public static class CommitGraph
         return cells;
     }
 
+    public static int ForkCount(GraphRow row)
+    {
+        if (row.Names is not { Count: > 1 } || row.Dots.Length == 0 || !row.Dots[0])
+        {
+            return 0;
+        }
+
+        return row.Names.Count - 1;
+    }
+
+    public static string? ForkLabel(GraphRow row)
+    {
+        if (ForkCount(row) == 0 || row.Names is null)
+        {
+            return null;
+        }
+
+        return string.Join(", ", row.Names.Skip(1));
+    }
+
+    public static IReadOnlyList<Glyph> PaintRow(GraphRow row)
+    {
+        return PaintFork(Paint(row.Cells), ForkCount(row));
+    }
+
+    public static IReadOnlyList<Glyph> PaintFork(IReadOnlyList<Glyph> line, int forks)
+    {
+        if (forks <= 0 || line.Count == 0)
+        {
+            return line;
+        }
+
+        var glyphs = line.ToList();
+        for (var i = 0; i < forks; i++)
+        {
+            var lane = i + 1;
+            if (glyphs[^1].Symbol == ' ')
+            {
+                glyphs[^1] = new Glyph('─', lane);
+            }
+            else
+            {
+                glyphs.Add(new Glyph('─', lane));
+            }
+
+            glyphs.Add(new Glyph('●', lane));
+            glyphs.Add(new Glyph(' ', -1));
+        }
+
+        return glyphs;
+    }
+
     public static IReadOnlyList<Glyph> Paint(IReadOnlyList<GraphCell>? cells)
     {
         if (cells is null || cells.Count == 0)

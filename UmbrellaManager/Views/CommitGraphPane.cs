@@ -96,9 +96,9 @@ public sealed class CommitGraphPane : View
         var body = MessageColor(commit, selected);
         Painter.Line(this, line, "", new Attribute(body, background));
         var x = 0;
-        if (commit.Cells is { Count: > 0 } cells)
+        if (commit.Cells is { Count: > 0 })
         {
-            foreach (var glyph in CommitGraph.Paint(cells))
+            foreach (var glyph in CommitGraph.PaintRow(commit))
             {
                 if (glyph.Symbol != ' ')
                 {

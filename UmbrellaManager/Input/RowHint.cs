@@ -21,7 +21,8 @@ public readonly record struct RowHintInput(
     bool Setup = false,
     bool Promotable = false,
     bool Checking = false,
-    bool Success = false);
+    bool Success = false,
+    string? ForkBranch = null);
 
 public static class RowHint
 {
@@ -132,9 +133,10 @@ public static class RowHint
             return "Jetzt: Entf Vormerkung entfernen" + prepare;
         }
 
+        var fork = string.IsNullOrEmpty(row.ForkBranch) ? "" : " · " + row.ForkBranch;
         if (row.Tone == CommitTone.DarkGreen)
         {
-            return (row.ModuleStaged ? "Jetzt: Entf Vormerkung entfernen" : "Jetzt: aktueller Pin") + prepare;
+            return (row.ModuleStaged ? "Jetzt: Entf Vormerkung entfernen" : "Jetzt: aktueller Pin") + fork + prepare;
         }
 
         if (row.NewerOnBranch)
@@ -142,6 +144,6 @@ public static class RowHint
             return "Jetzt: c diesen neueren Commit wählen" + prepare;
         }
 
-        return "Jetzt: Enter diesen Commit vormerken" + prepare;
+        return "Jetzt: Enter diesen Commit vormerken" + fork + prepare;
     }
 }

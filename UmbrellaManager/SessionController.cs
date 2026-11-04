@@ -216,7 +216,8 @@ public sealed class SessionController
                 _setupOpen,
                 onCommit && Graph[GraphIndex].Promotable,
                 CheckingRemote,
-                _successVisible));
+                _successVisible,
+                onCommit ? CommitGraph.ForkLabel(Graph[GraphIndex]) : null));
         }
     }
 
