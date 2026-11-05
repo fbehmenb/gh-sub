@@ -132,18 +132,14 @@ public static class CommitGraph
     {
         var parents = Distinct(row.Parents);
         var index = IndexOf(columns, row.Sha);
-        if (index < 0)
+        if (OnMainLine(row) && index > 0 && Free(columns, 0))
         {
-            index = columns.FindIndex(static sha => sha is null);
-            if (index < 0)
-            {
-                index = columns.Count;
-                columns.Add(row.Sha);
-            }
-            else
-            {
-                columns[index] = row.Sha;
-            }
+            columns[0] = row.Sha;
+            index = 0;
+        }
+        else if (index < 0)
+        {
+            index = Claim(columns, OnMainLine(row) ? 0 : 1, row.Sha);
         }
 
         var merges = new List<int>();
@@ -237,6 +233,36 @@ public static class CommitGraph
                 ? new GraphCell('+', cells[i].Lane)
                 : new GraphCell('-', lane);
         }
+    }
+
+    private static bool OnMainLine(GraphRow row)
+    {
+        return row.Dots.Length > 0 && row.Dots[0];
+    }
+
+    private static bool Free(List<string?> columns, int index)
+    {
+        return index >= columns.Count || columns[index] is null;
+    }
+
+    private static int Claim(List<string?> columns, int start, string sha)
+    {
+        for (var i = start; i < columns.Count; i++)
+        {
+            if (columns[i] is null)
+            {
+                columns[i] = sha;
+                return i;
+            }
+        }
+
+        while (columns.Count < start)
+        {
+            columns.Add(null);
+        }
+
+        columns.Add(sha);
+        return columns.Count - 1;
     }
 
     private static bool Continues(IReadOnlyList<GraphCell> cells, int index)

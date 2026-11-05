@@ -445,6 +445,39 @@ public class ReadingTests
     }
 
     [Fact]
+    public void Unmerged_feature_branch_forks_beside_the_default_line()
+    {
+        var day = new DateTimeOffset(2026, 10, 21, 17, 53, 49, TimeSpan.Zero);
+        const string middle = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        const string newest = "ffffffffffffffffffffffffffffffffffffffff";
+        var standard = new[]
+        {
+            new CommitInfo(Pin, "spitze", day, Parents: [Other]),
+            new CommitInfo(Other, "darunter", day.AddDays(-1), Parents: []),
+        };
+        var feature = new[]
+        {
+            new CommitInfo(newest, "preview", day.AddDays(3), Parents: [middle]),
+            new CommitInfo(middle, "apis", day.AddDays(2), Parents: [Feature]),
+            new CommitInfo(Feature, "bump", day.AddDays(1), Parents: [Pin]),
+        };
+
+        var rows = GraphBuilder.Build("20.0", standard, [("GBoo/413-portierung-20", feature)], pinSha: null, pendingSha: null);
+
+        Assert.Equal(["GBoo/413-portierung-20"], rows[0].Names);
+        Assert.Equal(' ', rows[0].Cells![0].Symbol);
+        Assert.Equal('*', rows[0].Cells![1].Symbol);
+        var tip = rows.Single(row => row.Sha == Pin);
+        Assert.Equal(["20.0"], tip.Names);
+        Assert.Equal('*', tip.Cells![0].Symbol);
+        Assert.Contains(tip.Cells!, cell => cell.Symbol == '/');
+        Assert.All(feature, commit => Assert.False(rows.Single(row => row.Sha == commit.Sha).Dots[0]));
+        Assert.Equal(
+            ["  ● ", "  │ ", "  ● ", "  │ ", "  ● ", "│ │ ", "●─╯ ", "│ ", "● "],
+            Picture(rows));
+    }
+
+    [Fact]
     public void Commit_graph_paints_rounded_branches()
     {
         Assert.Equal("●─╮ ", Line(CommitGraph.Paint([new GraphCell('*', 0), new GraphCell('\\', 1)])));
