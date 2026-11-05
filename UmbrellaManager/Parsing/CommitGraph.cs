@@ -109,7 +109,11 @@ public static class CommitGraph
             var stem = Stem(cells[i].Symbol, i, star, right, left, onRight, onLeft);
             glyphs.Add(new Glyph(stem, StemLane(cells[i].Lane, stem, onLeft, leftLane, rightLane)));
             var bridge = (right >= 0 && i >= star && i < right) || (left >= 0 && i >= left && i < star);
-            var bridgeLane = bridge ? (i < star ? leftLane : rightLane) : -1;
+            var bridgeLane = -1;
+            if (bridge)
+            {
+                bridgeLane = i < star ? leftLane : BridgeLane(cells, i, rightLane);
+            }
             glyphs.Add(new Glyph(bridge ? '─' : ' ', bridgeLane));
         }
 
@@ -151,6 +155,8 @@ public static class CommitGraph
             }
         }
 
+        var incoming = new List<int>();
+
         var cells = new List<GraphCell>(columns.Count);
         for (var i = 0; i < columns.Count; i++)
         {
@@ -178,6 +184,7 @@ public static class CommitGraph
             var symbol = from > index ? '/' : '\\';
             Connect(cells, from, index, symbol, from);
             columns[from] = null;
+            incoming.Add(from);
         }
 
         columns[index] = parents.Count > 0 ? parents[0] : null;
@@ -186,7 +193,7 @@ public static class CommitGraph
             var slot = -1;
             for (var i = index + 1; i < columns.Count; i++)
             {
-                if (columns[i] is null)
+                if (columns[i] is null && !incoming.Contains(i))
                 {
                     slot = i;
                     break;
@@ -284,17 +291,7 @@ public static class CommitGraph
             return false;
         }
 
-        if (index == Edge(cells, star, 1))
-        {
-            return symbol == '/';
-        }
-
-        if (index == Edge(cells, star, -1))
-        {
-            return symbol == '\\';
-        }
-
-        return false;
+        return symbol == '/' ? index > star : index < star;
     }
 
     private static char Stem(char symbol, int index, int star, int right, int left, bool onRight, bool onLeft)
@@ -314,6 +311,16 @@ public static class CommitGraph
             return symbol == '/' ? '╭' : '╰';
         }
 
+        if (symbol == '/' && onRight)
+        {
+            return '┴';
+        }
+
+        if (symbol == '\\' && onLeft)
+        {
+            return '┬';
+        }
+
         if (onRight || onLeft)
         {
             return symbol is '|' or '+' ? '┼' : '─';
@@ -324,12 +331,18 @@ public static class CommitGraph
 
     private static int StemLane(int lane, char stem, bool onLeft, int leftLane, int rightLane)
     {
-        if (stem is '●' or '│' or '┼' or ' ')
+        if (stem is '●' or '│' or '┼' or '┴' or '┬' or ' ')
         {
             return lane;
         }
 
         return onLeft ? leftLane : rightLane;
+    }
+
+    private static int BridgeLane(IReadOnlyList<GraphCell> cells, int index, int rightLane)
+    {
+        var next = index + 1;
+        return next < cells.Count && cells[next].Symbol == '/' ? cells[next].Lane : rightLane;
     }
 
     private static int Edge(IReadOnlyList<GraphCell> cells, int star, int direction)

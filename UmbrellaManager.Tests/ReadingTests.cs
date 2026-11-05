@@ -478,8 +478,44 @@ public class ReadingTests
     }
 
     [Fact]
+    public void Feature_fork_keeps_the_curve_into_a_merge_commit()
+    {
+        var day = new DateTimeOffset(2026, 10, 21, 17, 53, 49, TimeSpan.Zero);
+        const string side = "dddddddddddddddddddddddddddddddddddddddd";
+        const string ahead = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        var standard = new[]
+        {
+            new CommitInfo(Pin, "spitze", day, Parents: [Other, side]),
+            new CommitInfo(side, "zweiter", day.AddDays(-1), Parents: [Other]),
+            new CommitInfo(Other, "erster", day.AddDays(-2), Parents: []),
+        };
+        var feature = new[]
+        {
+            new CommitInfo(ahead, "preview", day.AddDays(1), Parents: [Pin]),
+        };
+
+        var rows = GraphBuilder.Build("20.0", standard, [("GBoo/413-portierung-20", feature)], pinSha: null, pendingSha: null);
+
+        Assert.Equal(
+            ["  ● ", "│ │   ", "●─┴─╮ ", "│   │ ", "│   ● ", "│   │ ", "●───╯ "],
+            Picture(rows));
+    }
+
+    [Fact]
     public void Commit_graph_paints_rounded_branches()
     {
+        var arriving = CommitGraph.Paint([
+            new GraphCell('*', 0),
+            new GraphCell('/', 1),
+            new GraphCell('\\', 2),
+        ]);
+        Assert.Equal("●─┴─╮ ", Line(arriving));
+        Assert.Equal(1, arriving[2].Lane);
+        Assert.Equal("│ │   ", Line(CommitGraph.PaintLink([
+            new GraphCell('*', 0),
+            new GraphCell('/', 1),
+            new GraphCell('\\', 2),
+        ])));
         Assert.Equal("●─╮ ", Line(CommitGraph.Paint([new GraphCell('*', 0), new GraphCell('\\', 1)])));
         Assert.Equal("●─╯ ", Line(CommitGraph.Paint([new GraphCell('*', 0), new GraphCell('/', 1)])));
         Assert.Equal("╰─● ", Line(CommitGraph.Paint([new GraphCell('\\', 0), new GraphCell('*', 1)])));
