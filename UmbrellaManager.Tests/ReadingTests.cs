@@ -227,6 +227,30 @@ public class ReadingTests
     }
 
     [Fact]
+    public void Branch_column_follows_the_tip_that_holds_the_pin()
+    {
+        var day = new DateTimeOffset(2026, 10, 1, 0, 0, 0, TimeSpan.Zero);
+        var older = new CommitInfo(Other, "alt", day);
+        var pin = new CommitInfo(Pin, "vendor", day.AddDays(1));
+        var tips = new[]
+        {
+            new BranchTip("19.0", Other, day, false),
+            new BranchTip("20.0", Pin, day.AddDays(1), false),
+        };
+        var rows = GraphBuilder.Build("19.0", [older], [("20.0", [pin])], Pin, null);
+
+        Assert.Equal("20.0", PinBranch.FromGraph(rows, Pin, "19.0"));
+        Assert.Equal("20.0", PinBranch.FromTips("19.0", Pin, tips));
+        Assert.Equal("19.0", PinBranch.FromTips("19.0", Other, tips));
+        Assert.Equal("19.0", PinBranch.FromTips("19.0", Feature, tips));
+        Assert.Equal("19.0, 20.0", PinBranch.FromTips("19.0", Pin,
+        [
+            new BranchTip("20.0", Pin, day, false),
+            new BranchTip("19.0", Pin, day, false),
+        ]));
+    }
+
+    [Fact]
     public void Help_explains_every_key()
     {
         var help = string.Join('\n', KeyMap.Help);

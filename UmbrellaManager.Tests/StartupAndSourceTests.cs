@@ -761,6 +761,79 @@ public class StartupAndSourceTests
     }
 
     [Fact]
+    public async Task Branch_column_shows_the_tip_that_holds_the_pin()
+    {
+        const string pin = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        const string older = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        var process = new ScriptedProcess((_, args) =>
+        {
+            var joined = string.Join(' ', args);
+            if (joined.Contains("show"))
+            {
+                return new ProcessResult(0, """
+                    [submodule "thirdparty_modules"]
+                    	path = thirdparty_modules
+                    	url = https://github.com/Org/thirdparty_modules.git
+                    	branch = 19.0
+                    """, "");
+            }
+
+            if (joined.Contains("ls-tree"))
+            {
+                return new ProcessResult(0, "160000 commit " + pin + "\tthirdparty_modules\n", "");
+            }
+
+            if (joined.Contains("graphql"))
+            {
+                return new ProcessResult(0, "{\"data\":{\"repository\":{\"refs\":{\"nodes\":["
+                    + "{\"name\":\"19.0\",\"target\":{\"oid\":\"" + older + "\",\"committedDate\":\"2026-10-01T00:00:00Z\"}},"
+                    + "{\"name\":\"20.0\",\"target\":{\"oid\":\"" + pin + "\",\"committedDate\":\"2026-10-02T00:00:00Z\"}}"
+                    + "]}}}}", "");
+            }
+
+            if (joined.Contains("compare"))
+            {
+                var status = joined.Contains("...20.0") ? "identical" : "diverged";
+                return new ProcessResult(0, "{\"status\":\"" + status + "\"}", "");
+            }
+
+            if (joined.Contains("commits") && joined.Contains("sha=20.0"))
+            {
+                return new ProcessResult(0, "[" + Commit(pin, "vendor", "2026-10-02T00:00:00Z") + "]", "");
+            }
+
+            if (joined.Contains("commits"))
+            {
+                return new ProcessResult(0, "[" + Commit(older, "alt", "2026-10-01T00:00:00Z") + "]", "");
+            }
+
+            if (joined.Contains("rev-parse"))
+            {
+                return new ProcessResult(0, older + "\n", "");
+            }
+
+            if (joined.Contains("get-url"))
+            {
+                return new ProcessResult(0, "https://github.com/Org/odoo_umbrella\n", "");
+            }
+
+            if (joined.Contains("repos/Org/thirdparty_modules"))
+            {
+                return new ProcessResult(0, "{\"default_branch\":\"19.0\"}", "");
+            }
+
+            return new ProcessResult(0, "", "");
+        });
+        var controller = new SessionController(new UmbrellaSource(process, new ResponseCache(), "C:\\repo"), ["dev/20.0"], "chore/pin-*");
+        await controller.LoadCurrentAsync();
+
+        var row = Assert.Single(controller.Rows, item => item.Name == "thirdparty_modules");
+        Assert.Equal("19.0", row.Branch);
+        Assert.Equal("20.0", controller.DisplayedBranch(row));
+        Assert.Contains(controller.Graph, item => item.Tone == CommitTone.DarkGreen && item.Names is not null && item.Names.Contains("20.0"));
+    }
+
+    [Fact]
     public async Task Startup_shows_changing_loading_steps_and_ignores_navigation()
     {
         SessionController? current = null;

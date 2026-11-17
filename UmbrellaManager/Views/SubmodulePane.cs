@@ -72,7 +72,7 @@ public sealed class SubmodulePane : View
         var prefix = row.IsFolder ? (row.Expanded ? "v " : "> ") : "  ";
         var name = new string(' ', row.Depth * 2) + prefix + row.Name;
         var pin = row.Sha is null ? "" : Sha.Short(row.Sha);
-        var branch = row.Branch ?? "";
+        var branch = _controller.DisplayedBranch(row);
         if (_controller.IsProduction && row.Sha is not null && _controller.PinMarks.TryGetValue(row.Path, out var mark))
         {
             branch = branch.Length == 0 ? mark : branch + " " + mark;

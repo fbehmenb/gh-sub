@@ -494,6 +494,66 @@ public sealed class UmbrellaSource
         return new GraphSnapshot(lanes, rows, message);
     }
 
+    public async Task<IReadOnlyDictionary<string, string>> LoadDisplayedBranchesAsync(
+        IReadOnlyList<SubmoduleEntry> modules,
+        CancellationToken cancellationToken)
+    {
+        var shown = new Dictionary<string, string>(StringComparer.Ordinal);
+        using var gate = new SemaphoreSlim(4);
+        var tasks = modules.Select(async module =>
+        {
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var branch = await DisplayedBranchAsync(module, cancellationToken).ConfigureAwait(false);
+                if (string.IsNullOrEmpty(branch))
+                {
+                    return;
+                }
+
+                lock (shown)
+                {
+                    shown[module.Path] = branch;
+                }
+            }
+            finally
+            {
+                gate.Release();
+            }
+        });
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+        return shown;
+    }
+
+    private async Task<string?> DisplayedBranchAsync(SubmoduleEntry module, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrEmpty(module.Sha))
+        {
+            return module.Branch;
+        }
+
+        var repo = GitHubRepo.FromUrl(module.Url);
+        if (repo is null)
+        {
+            return module.Branch;
+        }
+
+        try
+        {
+            var tips = await BranchesAsync(repo, cancellationToken).ConfigureAwait(false);
+            return PinBranch.FromTips(module.Branch, module.Sha, tips);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is UserFacingException or JsonException)
+        {
+            // Ein unlesbares Repo lässt die übrigen Zeilen stehen.
+            return null;
+        }
+    }
+
     public async Task<IReadOnlyDictionary<string, string>> LoadPinMarksAsync(
         IReadOnlyList<SubmoduleEntry> modules,
         CancellationToken cancellationToken)

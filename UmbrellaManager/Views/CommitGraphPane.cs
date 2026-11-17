@@ -198,26 +198,27 @@ public sealed class CommitGraphPane : View
             ];
         }
 
+        var branch = _controller.DisplayedBranch(row);
         var staged = _controller.StagedPin(row.Path);
         if (staged is not null)
         {
-            return Module(row, "vorgemerkt", Painter.Pending, staged);
+            return Module(row, "vorgemerkt", Painter.Pending, staged, branch);
         }
 
         if (row.Sha is not null)
         {
-            return Module(row, "gepinnt", Painter.Pin, row.Sha);
+            return Module(row, "gepinnt", Painter.Pin, row.Sha, branch);
         }
 
-        return Module(row, "kein Pin", Painter.Secondary, null);
+        return Module(row, "kein Pin", Painter.Secondary, null, branch);
     }
 
-    private static Head[] Module(VisibleRow row, string badge, Color color, string? sha)
+    private static Head[] Module(VisibleRow row, string badge, Color color, string? sha, string branch)
     {
         return
         [
             new Head(row.Name, Painter.Ink, null),
-            new Head(badge, color, Join(row.Branch, sha is null ? "" : Sha.Short(sha))),
+            new Head(badge, color, Join(branch, sha is null ? "" : Sha.Short(sha))),
             new Head("", Painter.Ink, null),
         ];
     }

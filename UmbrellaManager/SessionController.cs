@@ -225,6 +225,18 @@ public sealed class SessionController
 
     public IReadOnlyDictionary<string, string> PinMarks { get; private set; } = new Dictionary<string, string>();
 
+    public IReadOnlyDictionary<string, string> PinBranches { get; private set; } = new Dictionary<string, string>(StringComparer.Ordinal);
+
+    public string DisplayedBranch(VisibleRow row)
+    {
+        if (PinBranches.TryGetValue(row.Path, out var shown) && shown.Length > 0)
+        {
+            return shown;
+        }
+
+        return row.Branch ?? "";
+    }
+
     public IReadOnlyList<VisibleRow> Rows => SubmoduleTree.Flatten(Roots, _collapsed);
 
     public VisibleRow? Selected
@@ -786,6 +798,7 @@ public sealed class SessionController
             Raise();
         });
         var token = Restart();
+        Task<IReadOnlyDictionary<string, string>>? displayedTask = null;
         try
         {
             var branch = Branches[index];
@@ -795,6 +808,7 @@ public sealed class SessionController
                 return;
             }
 
+            displayedTask = _source.LoadDisplayedBranchesAsync(Collect(roots), token);
             var rows = SubmoduleTree.Flatten(roots, new HashSet<string>(StringComparer.Ordinal));
             var treeIndex = PreferredRow(rows, keepPath);
             var selected = treeIndex >= 0 && treeIndex < rows.Count ? rows[treeIndex] : (VisibleRow?)null;
@@ -817,6 +831,7 @@ public sealed class SessionController
                 GraphMessage = selected?.IsFolder == true ? "Ordner, kein Submodul." : "Lade Commits …";
                 RememberPromotion(null);
                 PinMarks = new Dictionary<string, string>();
+                PinBranches = new Dictionary<string, string>(StringComparer.Ordinal);
                 Message = Status(branch);
                 Raise();
             });
@@ -874,6 +889,7 @@ public sealed class SessionController
                 return;
             }
 
+            var pinBranch = PinBranch.FromGraph(loaded.Snapshot.Rows, module.Sha, module.Branch);
             Post(() =>
             {
                 if (epoch != _epoch)
@@ -886,6 +902,11 @@ public sealed class SessionController
                 GraphIndex = PinRow(loaded.Snapshot.Rows, module.Sha);
                 GraphMessage = loaded.Snapshot.Message;
                 RememberPromotion(loaded.Promotion);
+                if (!string.IsNullOrEmpty(pinBranch))
+                {
+                    RememberDisplayed(new Dictionary<string, string>(StringComparer.Ordinal) { [module.Path] = pinBranch });
+                }
+
                 Message = Status(branch);
                 Raise();
             });
@@ -896,6 +917,10 @@ public sealed class SessionController
         catch (UserFacingException ex)
         {
             Fail(epoch, ex.Message);
+        }
+        finally
+        {
+            await PublishDisplayedAsync(displayedTask, epoch).ConfigureAwait(false);
         }
     }
 
@@ -986,6 +1011,7 @@ public sealed class SessionController
                 return;
             }
 
+            var pinBranch = PinBranch.FromGraph(loaded.Snapshot.Rows, module.Sha, module.Branch);
             Post(() =>
             {
                 if (epoch != _epoch)
@@ -998,6 +1024,11 @@ public sealed class SessionController
                 GraphIndex = PinRow(loaded.Snapshot.Rows, module.Sha);
                 GraphMessage = loaded.Snapshot.Message;
                 RememberPromotion(loaded.Promotion);
+                if (!string.IsNullOrEmpty(pinBranch))
+                {
+                    RememberDisplayed(new Dictionary<string, string>(StringComparer.Ordinal) { [path] = pinBranch });
+                }
+
                 Message = Status(Branch);
                 Raise();
             });
@@ -1850,6 +1881,79 @@ public sealed class SessionController
             _source.Progress = null;
             Raise();
         });
+    }
+
+    private async Task PublishDisplayedAsync(Task<IReadOnlyDictionary<string, string>>? displayedTask, int epoch)
+    {
+        if (displayedTask is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var displayed = await displayedTask.ConfigureAwait(false);
+            if (epoch != _epoch)
+            {
+                return;
+            }
+
+            Post(() =>
+            {
+                if (epoch != _epoch)
+                {
+                    return;
+                }
+
+                if (RememberDisplayed(displayed))
+                {
+                    Raise();
+                }
+            });
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (UserFacingException)
+        {
+        }
+    }
+
+    private bool RememberDisplayed(IReadOnlyDictionary<string, string> updates)
+    {
+        if (updates.Count == 0)
+        {
+            return false;
+        }
+
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var pair in PinBranches)
+        {
+            map[pair.Key] = pair.Value;
+        }
+
+        var changed = false;
+        foreach (var pair in updates)
+        {
+            if (pair.Value.Length == 0)
+            {
+                continue;
+            }
+
+            if (!map.TryGetValue(pair.Key, out var current) || !current.Equals(pair.Value, StringComparison.Ordinal))
+            {
+                map[pair.Key] = pair.Value;
+                changed = true;
+            }
+        }
+
+        if (!changed)
+        {
+            return false;
+        }
+
+        PinBranches = map;
+        return true;
     }
 
     private void Fail(int epoch, string message)
