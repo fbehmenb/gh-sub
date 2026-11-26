@@ -422,6 +422,87 @@ public class StartupAndSourceTests
         return "{\"sha\":\"" + sha + "\",\"commit\":{\"message\":\"" + subject + "\",\"committer\":{\"date\":\"" + date + "\"}}}";
     }
 
+    [Fact]
+    public async Task Help_shows_login_and_primary_email_and_logout_waits_for_confirmation()
+    {
+        var calls = new List<string>();
+        var process = new ScriptedProcess((_, args) =>
+        {
+            var joined = string.Join(' ', args);
+            calls.Add(joined);
+            if (joined.Contains("user/emails"))
+            {
+                return new ProcessResult(0, """[{"email":"andere@example.com","primary":false},{"email":"ich@example.com","primary":true}]""", "");
+            }
+
+            if (args.Contains("user"))
+            {
+                return new ProcessResult(0, """{"login":"fbehmenb","email":null}""", "");
+            }
+
+            if (args.Contains("logout"))
+            {
+                return new ProcessResult(0, "", "");
+            }
+
+            return new ProcessResult(0, "", "");
+        });
+        var controller = new SessionController(new UmbrellaSource(process, new ResponseCache(), "C:\\repo"), ["dev/19.0"], "chore/pin-*");
+
+        controller.Execute(AppCommand.Logout);
+        Assert.Contains("Hilfe", controller.Message);
+        Assert.DoesNotContain(calls, call => call.Contains("logout"));
+
+        controller.Execute(AppCommand.ShowHelp);
+        await controller.AccountTask;
+        Assert.Equal(["GitHub", "fbehmenb", "ich@example.com", ""], controller.AccountLines);
+
+        controller.Execute(AppCommand.Logout);
+        Assert.True(controller.LogoutArmed);
+        Assert.True(controller.HelpVisible);
+        Assert.Contains("j meldet ab", string.Join('\n', controller.AccountLines));
+        Assert.DoesNotContain(calls, call => call.Contains("logout"));
+
+        controller.Execute(AppCommand.CancelPush);
+        Assert.False(controller.LogoutArmed);
+        Assert.True(controller.HelpVisible);
+
+        controller.Execute(AppCommand.Logout);
+        controller.Execute(AppCommand.ConfirmPush);
+        await controller.AccountTask;
+        Assert.Contains(calls, call => call.Contains("auth logout") && call.Contains("--hostname github.com") && call.Contains("--user fbehmenb"));
+        Assert.Contains("abgemeldet", controller.Message);
+        Assert.Equal(["GitHub", "Abgemeldet.", ""], controller.AccountLines);
+        Assert.All(calls, call => Assert.DoesNotContain("ghp_", call));
+    }
+
+    [Fact]
+    public async Task Help_names_the_missing_user_scope_when_the_email_stays_hidden()
+    {
+        var process = new ScriptedProcess((_, args) =>
+        {
+            var joined = string.Join(' ', args);
+            if (joined.Contains("user/emails"))
+            {
+                return new ProcessResult(1, "{\"message\":\"Not Found\",\"status\":\"404\"}", "This API operation needs the \"user\" scope.");
+            }
+
+            if (args.Contains("user"))
+            {
+                return new ProcessResult(0, """{"login":"fbehmenb","email":null}""", "");
+            }
+
+            return new ProcessResult(0, "", "");
+        });
+        var controller = new SessionController(new UmbrellaSource(process, new ResponseCache(), "C:\\repo"), ["dev/19.0"], "chore/pin-*");
+        controller.Execute(AppCommand.ShowHelp);
+        await controller.AccountTask;
+
+        Assert.Contains("fbehmenb", controller.AccountLines);
+        Assert.Contains(controller.AccountLines, line => line.Contains("Bereich user", StringComparison.Ordinal));
+        Assert.DoesNotContain(controller.AccountLines, line => line.Contains("SSO", StringComparison.Ordinal));
+    }
+
     private static string Heads(string name, string sha, string date)
     {
         return "{\"data\":{\"repository\":{\"refs\":{\"nodes\":[{\"name\":\""

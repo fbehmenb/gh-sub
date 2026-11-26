@@ -29,6 +29,7 @@ public static class KeyMap
         ("Shift+R", AppCommand.ReloadAll),
         ("Q", AppCommand.Quit),
         ("?", AppCommand.ShowHelp),
+        ("O", AppCommand.Logout),
     ];
 
     public const int FooterHeight = 1;
@@ -57,6 +58,7 @@ public static class KeyMap
         "s          Einrichtung, Takt der Remote-Prüfung",
         "r          dieses Submodul neu laden",
         "Umschalt+r  Tabs neu laden",
+        "o          bei GitHub abmelden",
         "q          beenden",
         "?          diese Übersicht öffnen oder schließen",
     ];
@@ -182,6 +184,11 @@ public static class KeyMap
         if (key == Terminal.Gui.Input.Key.R)
         {
             return AppCommand.Reload;
+        }
+
+        if (key == Terminal.Gui.Input.Key.O)
+        {
+            return AppCommand.Logout;
         }
 
         if (key == Terminal.Gui.Input.Key.Q)

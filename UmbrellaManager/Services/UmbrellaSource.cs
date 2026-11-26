@@ -47,6 +47,67 @@ public sealed class UmbrellaSource
         _cache.Drop(key => BelongsToRepo(key, marker));
     }
 
+    public async Task<GitHubAccount> ReadAccountAsync(CancellationToken cancellationToken)
+    {
+        var userJson = await ApiAsync("user", cancellationToken).ConfigureAwait(false);
+        string? login;
+        string? email;
+        try
+        {
+            login = GitHubParse.ParseUserLogin(userJson);
+            email = GitHubParse.ParseUserEmail(userJson);
+        }
+        catch (JsonException)
+        {
+            throw new UserFacingException("GitHub-Abfrage fehlgeschlagen.");
+        }
+
+        if (string.IsNullOrEmpty(login))
+        {
+            throw new UserFacingException("GitHub nennt keinen Benutzernamen.");
+        }
+
+        string? note = null;
+        if (string.IsNullOrEmpty(email))
+        {
+            var emails = await _process.RunAsync("gh", ["api", "user/emails"], _path, cancellationToken).ConfigureAwait(false);
+            if (emails.ExitCode == 0 && !string.IsNullOrWhiteSpace(emails.StandardOutput))
+            {
+                try
+                {
+                    email = GitHubParse.ParsePrimaryEmail(emails.StandardOutput);
+                }
+                catch (JsonException)
+                {
+                    note = "GitHub-Abfrage fehlgeschlagen.";
+                }
+            }
+            else if (GitHubText.NeedsUserScope(emails.StandardOutput, emails.StandardError))
+            {
+                note = "E-Mail nicht lesbar. Dem Token fehlt der Bereich user.";
+            }
+            else
+            {
+                note = GitHubText.Describe(emails.StandardOutput, emails.StandardError);
+            }
+        }
+
+        return new GitHubAccount(login, string.IsNullOrEmpty(email) ? null : email, note);
+    }
+
+    public async Task LogoutAsync(string login, CancellationToken cancellationToken)
+    {
+        var result = await _process.RunAsync(
+            "gh",
+            ["auth", "logout", "--hostname", "github.com", "--user", login],
+            _path,
+            cancellationToken).ConfigureAwait(false);
+        if (result.ExitCode != 0)
+        {
+            throw new UserFacingException("Abmelden fehlgeschlagen. " + GitHubText.Redact(FirstLine(result.StandardError.Length > 0 ? result.StandardError : result.StandardOutput)));
+        }
+    }
+
     public async Task<string?> ModuleVersionAsync(string? moduleUrl, string sha, CancellationToken cancellationToken)
     {
         var repo = GitHubRepo.FromUrl(moduleUrl);

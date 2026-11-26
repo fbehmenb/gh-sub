@@ -10,4 +10,4 @@ alwaysApply: false
 - Eine View zeigt Zustand. Sie speichert ihn nicht statisch und ruft `git` oder `gh` nicht selbst auf.
 - Tasten liegen in einer zentralen Belegung. Views registrieren keine eigenen Handler für `a`, `c`, `r`, `q`, Enter, Entf oder Pfeile.
 
-Belegung: `Tab` nächster Tab, `Umschalt+Tab` vorheriger Tab, `←` Submodule, `→` Commits, `↑`/`↓` Navigation, `Bild↑`/`Bild↓` vorheriges und nächstes Submodul ohne Fokuswechsel, Leertaste Ordner, Enter Pin, `c` neuerer Pin, Entf Vormerkung weg, `a` hinzufügen, `p` PR, `j` pushen, `n` abbrechen, `u` Stand holen, `s` Einrichtung, `r` dieses Submodul neu laden, `Umschalt+r` Tabs neu laden, `q` beenden. `Esc` beendet nicht. `?` Hilfe.
+Belegung: `Tab` nächster Tab, `Umschalt+Tab` vorheriger Tab, `←` Submodule, `→` Commits, `↑`/`↓` Navigation, `Bild↑`/`Bild↓` vorheriges und nächstes Submodul ohne Fokuswechsel, Leertaste Ordner, Enter Pin, `c` neuerer Pin, Entf Vormerkung weg, `a` hinzufügen, `p` PR, `j` pushen, `n` abbrechen, `u` Stand holen, `s` Einrichtung, `r` dieses Submodul neu laden, `Umschalt+r` Tabs neu laden, `o` in der Hilfe abmelden, `q` beenden. `Esc` beendet nicht. `?` Hilfe.

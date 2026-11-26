@@ -22,7 +22,8 @@ public readonly record struct RowHintInput(
     bool Promotable = false,
     bool Checking = false,
     bool Success = false,
-    string? ForkBranch = null);
+    string? ForkBranch = null,
+    bool LogoutArmed = false);
 
 public static class RowHint
 {
@@ -40,7 +41,9 @@ public static class RowHint
 
         if (row.Help)
         {
-            return "Jetzt: ? schließt die Übersicht";
+            return row.LogoutArmed
+                ? "Jetzt: j meldet ab · n bleibt angemeldet"
+                : "Jetzt: ? schließt · o abmelden";
         }
 
         if (row.Publishing)

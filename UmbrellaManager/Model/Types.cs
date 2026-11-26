@@ -21,6 +21,8 @@ public sealed class TreeNode
 
 public readonly record struct VisibleRow(string Path, string Name, int Depth, bool IsFolder, bool Expanded, string? Sha, string? Branch);
 
+public readonly record struct GitHubAccount(string Login, string? Email, string? Note);
+
 public readonly record struct CommitInfo(string Sha, string Subject, DateTimeOffset Date, IReadOnlyList<string>? Parents = null);
 
 public readonly record struct BranchTip(string Name, string TipSha, DateTimeOffset? TipDate, bool PinIsOnBranch);

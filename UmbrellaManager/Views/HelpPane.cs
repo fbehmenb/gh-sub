@@ -25,10 +25,13 @@ public sealed class HelpPane : View
             return true;
         }
 
-        for (var index = 0; index < KeyMap.Help.Count && index < Viewport.Height; index++)
+        var lines = new List<string>(_controller.AccountLines);
+        lines.AddRange(KeyMap.Help);
+        for (var index = 0; index < lines.Count && index < Viewport.Height; index++)
         {
-            var color = index == 0 ? Painter.Ink : Painter.Muted;
-            Painter.Line(this, index, KeyMap.Help[index], new Attribute(color, Painter.Paper));
+            var title = lines[index] is "GitHub" or "Tasten";
+            var color = title ? Painter.Ink : Painter.Muted;
+            Painter.Line(this, index, lines[index], new Attribute(color, Painter.Paper));
         }
 
         return true;

@@ -201,7 +201,7 @@ public class ReadingTests
         var keys = KeyMap.Bindings.Select(binding => binding.Key).ToArray();
         Assert.Equal(keys.Length, keys.Distinct().Count());
         Assert.Equal(
-            ["Shift+Tab", "Tab", "Left", "Right", "Up", "Down", "PageUp", "PageDown", "Space", "Enter", "A", "Delete", "C", "P", "J", "N", "S", "U", "R", "Shift+R", "Q", "?"],
+            ["Shift+Tab", "Tab", "Left", "Right", "Up", "Down", "PageUp", "PageDown", "Space", "Enter", "A", "Delete", "C", "P", "J", "N", "S", "U", "R", "Shift+R", "Q", "?", "O"],
             keys);
         Assert.Equal(keys.Length, KeyMap.Bindings.Select(binding => binding.Command).Distinct().Count());
         Assert.Equal(AppCommand.NextBranch, KeyMap.Match(Key.Tab));
@@ -214,6 +214,7 @@ public class ReadingTests
         Assert.Equal(AppCommand.NextModule, KeyMap.Match(Key.PageDown));
         Assert.Equal(AppCommand.Reload, KeyMap.Match(Key.R));
         Assert.Equal(AppCommand.ReloadAll, KeyMap.Match(Key.R.WithShift));
+        Assert.Equal(AppCommand.Logout, KeyMap.Match(Key.O));
         Assert.Null(KeyMap.Match(Key.Esc));
     }
 
@@ -272,7 +273,7 @@ public class ReadingTests
     public void Help_explains_every_key()
     {
         var help = string.Join('\n', KeyMap.Help);
-        foreach (var phrase in new[] { "Submodule", "Commits", "bewegen", "Ordner", "Pin vormerken", "hinzufügen", "Entf", "PR", "pushen", "abbrechen", "Stand holen", "Einrichtung", "neu laden", "beenden", "?" })
+        foreach (var phrase in new[] { "Submodule", "Commits", "bewegen", "Ordner", "Pin vormerken", "hinzufügen", "Entf", "PR", "pushen", "abbrechen", "Stand holen", "Einrichtung", "neu laden", "abmelden", "beenden", "?" })
         {
             Assert.Contains(phrase, help);
         }
@@ -284,6 +285,10 @@ public class ReadingTests
         Assert.Contains("Umschalt+r", help);
         Assert.Equal(1, KeyMap.FooterHeight);
         Assert.Equal("? Hilfe", KeyMap.HelpHint);
+        Assert.Contains("o abmelden", RowHint.Describe(new RowHintInput(
+            true, false, false, false, false, FocusPane.Tree, false, false, false, false, CommitTone.Gray, false, false)));
+        Assert.Contains("j meldet ab", RowHint.Describe(new RowHintInput(
+            true, false, false, false, false, FocusPane.Tree, false, false, false, false, CommitTone.Gray, false, false, LogoutArmed: true)));
     }
 
     [Fact]

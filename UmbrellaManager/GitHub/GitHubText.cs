@@ -20,6 +20,12 @@ public static partial class GitHubText
         return text.Contains("No common ancestor", StringComparison.OrdinalIgnoreCase);
     }
 
+    public static bool NeedsUserScope(string stdout, string stderr)
+    {
+        var text = stdout + "\n" + stderr;
+        return text.Contains("\"user\" scope", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static string Describe(string stdout, string stderr)
     {
         var text = stdout + "\n" + stderr;

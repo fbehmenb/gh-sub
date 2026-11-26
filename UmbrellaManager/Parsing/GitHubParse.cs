@@ -300,6 +300,58 @@ public static partial class GitHubParse
         return tips;
     }
 
+    public static string? ParseUserLogin(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.TryGetProperty("login", out var value) ? value.GetString() : null;
+    }
+
+    public static string? ParseUserEmail(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        if (!document.RootElement.TryGetProperty("email", out var value) || value.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        var email = value.GetString();
+        return string.IsNullOrWhiteSpace(email) ? null : email;
+    }
+
+    public static string? ParsePrimaryEmail(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        if (document.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        string? first = null;
+        foreach (var item in document.RootElement.EnumerateArray())
+        {
+            if (!item.TryGetProperty("email", out var emailElement))
+            {
+                continue;
+            }
+
+            var email = emailElement.GetString();
+            if (string.IsNullOrWhiteSpace(email))
+            {
+                continue;
+            }
+
+            var primary = item.TryGetProperty("primary", out var primaryElement) && primaryElement.ValueKind == JsonValueKind.True;
+            if (primary)
+            {
+                return email;
+            }
+
+            first ??= email;
+        }
+
+        return first;
+    }
+
     public static string? ParseDefaultBranch(string json)
     {
         using var document = JsonDocument.Parse(json);

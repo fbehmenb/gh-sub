@@ -30,6 +30,7 @@ public enum AppCommand
     ReloadAll,
     Quit,
     ShowHelp,
+    Logout,
     OpenSetup,
     UpdateBranch,
 }
@@ -72,6 +73,9 @@ public sealed class SessionController
     private bool _pulling;
     private bool _loadFailed;
     private bool _setupOpen;
+    private GitHubAccount? _account;
+    private bool _accountLoading;
+    private bool _loggedOut;
     private int _setupIndex;
     private int _pollSeconds;
     private string? _setupFile;
@@ -162,6 +166,12 @@ public sealed class SessionController
 
     public bool HelpVisible { get; private set; }
 
+    public bool LogoutArmed { get; private set; }
+
+    public Task AccountTask { get; private set; } = Task.CompletedTask;
+
+    public IReadOnlyList<string> AccountLines => AccountBanner();
+
     public bool SetupOpen => _setupOpen;
 
     public IReadOnlyList<string> SetupLines
@@ -219,7 +229,8 @@ public sealed class SessionController
                 onCommit && Graph[GraphIndex].Promotable,
                 CheckingRemote,
                 _successVisible,
-                onCommit ? CommitGraph.ForkLabel(Graph[GraphIndex]) : null));
+                onCommit ? CommitGraph.ForkLabel(Graph[GraphIndex]) : null,
+                LogoutArmed));
         }
     }
 
@@ -268,16 +279,53 @@ public sealed class SessionController
             return;
         }
 
+        if (HelpVisible && LogoutArmed && command is AppCommand.ConfirmPush or AppCommand.CancelPush)
+        {
+            if (command == AppCommand.ConfirmPush)
+            {
+                AccountTask = LogoutAsync();
+            }
+            else
+            {
+                LogoutArmed = false;
+                Raise();
+            }
+
+            return;
+        }
+
         if (command == AppCommand.ShowHelp)
         {
-            HelpVisible = !HelpVisible;
+            if (HelpVisible)
+            {
+                HelpVisible = false;
+                LogoutArmed = false;
+            }
+            else
+            {
+                OpenHelp();
+            }
+
             Raise();
+            return;
+        }
+
+        if (HelpVisible && command == AppCommand.Logout)
+        {
+            ArmLogout();
+            return;
+        }
+
+        if (command == AppCommand.Logout)
+        {
+            Say("Abmelden steht in der Hilfe.");
             return;
         }
 
         if (HelpVisible)
         {
             HelpVisible = false;
+            LogoutArmed = false;
         }
 
         if (_publishing && command != AppCommand.Quit)
@@ -1714,6 +1762,130 @@ public sealed class SessionController
         }
 
         Raise();
+    }
+
+    private void OpenHelp()
+    {
+        HelpVisible = true;
+        LogoutArmed = false;
+        _loggedOut = false;
+        _account = null;
+        _accountLoading = true;
+        AccountTask = LoadAccountAsync();
+    }
+
+    private void ArmLogout()
+    {
+        if (_accountLoading)
+        {
+            Say("Anmeldung wird noch gelesen.");
+            return;
+        }
+
+        if (_loggedOut || string.IsNullOrEmpty(_account?.Login))
+        {
+            Say(_loggedOut ? "Schon abgemeldet." : "Kein Benutzername zum Abmelden.");
+            return;
+        }
+
+        LogoutArmed = true;
+        Raise();
+    }
+
+    private async Task LoadAccountAsync()
+    {
+        try
+        {
+            var account = await _source.ReadAccountAsync(CancellationToken.None).ConfigureAwait(false);
+            Post(() =>
+            {
+                _accountLoading = false;
+                _loggedOut = false;
+                _account = account;
+                if (HelpVisible)
+                {
+                    Raise();
+                }
+            });
+        }
+        catch (UserFacingException ex)
+        {
+            Post(() =>
+            {
+                _accountLoading = false;
+                _account = new GitHubAccount("", null, ex.Message);
+                if (HelpVisible)
+                {
+                    Raise();
+                }
+            });
+        }
+    }
+
+    private async Task LogoutAsync()
+    {
+        var login = _account?.Login;
+        if (string.IsNullOrEmpty(login))
+        {
+            Post(() =>
+            {
+                LogoutArmed = false;
+                Say("Kein Benutzername zum Abmelden.");
+            });
+            return;
+        }
+
+        try
+        {
+            await _source.LogoutAsync(login, CancellationToken.None).ConfigureAwait(false);
+            Post(() =>
+            {
+                LogoutArmed = false;
+                _loggedOut = true;
+                _account = null;
+                Message = "Bei GitHub abgemeldet.";
+                Raise();
+            });
+        }
+        catch (UserFacingException ex)
+        {
+            Post(() =>
+            {
+                LogoutArmed = false;
+                Message = ex.Message;
+                Raise();
+            });
+        }
+    }
+
+    private IReadOnlyList<string> AccountBanner()
+    {
+        if (_loggedOut)
+        {
+            return ["GitHub", "Abgemeldet.", ""];
+        }
+
+        if (_accountLoading || _account is null)
+        {
+            return ["GitHub", "Anmeldung wird gelesen …", ""];
+        }
+
+        if (string.IsNullOrEmpty(_account.Value.Login))
+        {
+            return ["GitHub", _account.Value.Note ?? "GitHub-Abfrage fehlgeschlagen.", ""];
+        }
+
+        var email = string.IsNullOrEmpty(_account.Value.Email)
+            ? _account.Value.Note ?? "Keine E-Mail hinterlegt."
+            : _account.Value.Email;
+        var lines = new List<string> { "GitHub", _account.Value.Login, email };
+        if (LogoutArmed)
+        {
+            lines.Add("j meldet ab    n bleibt angemeldet");
+        }
+
+        lines.Add("");
+        return lines;
     }
 
     private void Say(string message)
