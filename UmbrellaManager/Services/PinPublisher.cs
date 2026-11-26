@@ -294,7 +294,8 @@ public sealed class PinPublisher
                 cancellationToken).ConfigureAwait(false);
             if (push.ExitCode != 0)
             {
-                return new PinResult(change.Path, false, change.Name + ": " + Failure(push));
+                var open = await OpenPullAsync(tab, head, cancellationToken).ConfigureAwait(false);
+                return new PinResult(change.Path, false, PushFailureText(change.Name, PushReason(push.StandardOutput, push.StandardError), open));
             }
 
             var body = Body(change, tab);
@@ -357,11 +358,141 @@ public sealed class PinPublisher
         return number.Length == 0 ? url : number;
     }
 
+    public static string PushReason(string stdout, string stderr)
+    {
+        string? rejected = null;
+        string? specific = null;
+        foreach (var line in Lines(stderr, stdout))
+        {
+            if (IsPushNoise(line))
+            {
+                continue;
+            }
+
+            if (line.Contains("[rejected]", StringComparison.OrdinalIgnoreCase))
+            {
+                rejected ??= line;
+                continue;
+            }
+
+            if (line.StartsWith("remote:", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("fatal:", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("error:", StringComparison.OrdinalIgnoreCase))
+            {
+                specific ??= line;
+            }
+        }
+
+        if (specific is not null)
+        {
+            return GitHubText.Redact(specific);
+        }
+
+        if (rejected is not null)
+        {
+            var detail = Parenthetical(rejected);
+            return detail.Length == 0 ? GitHubText.Redact(rejected) : "Push abgelehnt " + detail;
+        }
+
+        return "Push abgelehnt";
+    }
+
+    public static int? ParseOpenPull(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Array || document.RootElement.GetArrayLength() == 0)
+            {
+                return null;
+            }
+
+            var number = document.RootElement[0];
+            if (number.TryGetProperty("number", out var property) && property.TryGetInt32(out var value) && value > 0)
+            {
+                return value;
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return null;
+    }
+
+    public static string PushFailureText(string name, string reason, int? pullRequest)
+    {
+        var text = name + ": " + reason;
+        if (pullRequest is int number)
+        {
+            text += ". PR " + number + " ist schon offen";
+        }
+
+        return text;
+    }
+
+    private async Task<int?> OpenPullAsync(string tab, string head, CancellationToken cancellationToken)
+    {
+        var listed = await _process.RunAsync(
+            "gh",
+            ["pr", "list", "--base", tab, "--head", head, "--state", "open", "--json", "number", "--limit", "1"],
+            _path,
+            cancellationToken).ConfigureAwait(false);
+        if (listed.ExitCode != 0 || string.IsNullOrWhiteSpace(listed.StandardOutput))
+        {
+            return null;
+        }
+
+        return ParseOpenPull(listed.StandardOutput);
+    }
+
     private static string Failure(ProcessResult result)
     {
         var line = FirstLine(result.StandardError.Length > 0 ? result.StandardError : result.StandardOutput);
         var text = GitHubText.Redact(line);
         return text.Length == 0 ? "fehlgeschlagen" : text;
+    }
+
+    private static IEnumerable<string> Lines(string stderr, string stdout)
+    {
+        var text = stderr + "\n" + stdout;
+        foreach (var line in text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length > 0)
+            {
+                yield return trimmed;
+            }
+        }
+    }
+
+    private static bool IsPushNoise(string line)
+    {
+        if (line.StartsWith("To ", StringComparison.Ordinal)
+            || line.StartsWith("hint:", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (line.StartsWith("remote:", StringComparison.OrdinalIgnoreCase)
+            && line.AsSpan("remote:".Length).Trim().Length == 0)
+        {
+            return true;
+        }
+
+        return line.StartsWith("error: failed to push some refs", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string Parenthetical(string line)
+    {
+        var open = line.LastIndexOf('(');
+        var close = line.LastIndexOf(')');
+        if (open < 0 || close < open)
+        {
+            return "";
+        }
+
+        return line[open..(close + 1)];
     }
 
     private static string FirstLine(string text)

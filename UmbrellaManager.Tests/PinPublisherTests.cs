@@ -34,6 +34,45 @@ public class PinPublisherTests
     }
 
     [Fact]
+    public void Rejected_push_names_the_git_reason_and_an_open_pull_request()
+    {
+        const string stderr = """
+            To https://github.com/Org/odoo_umbrella.git
+             ! [rejected]        abcdef1 -> chore/pin-gb_html_drawio-a7e938b-production/20.0 (non-fast-forward)
+            error: failed to push some refs to 'https://github.com/Org/odoo_umbrella.git'
+            hint: Updates were rejected because a pushed branch tip is behind its remote
+            hint: counterpart.
+            """;
+
+        Assert.Equal("Push abgelehnt (non-fast-forward)", PinPublisher.PushReason("", stderr));
+        Assert.Equal(
+            "gb_html_drawio: Push abgelehnt (non-fast-forward). PR 47 ist schon offen",
+            PinPublisher.PushFailureText("gb_html_drawio", PinPublisher.PushReason("", stderr), 47));
+        Assert.Equal(47, PinPublisher.ParseOpenPull("[{\"number\":47}]"));
+        Assert.Null(PinPublisher.ParseOpenPull("[]"));
+        Assert.Null(PinPublisher.ParseOpenPull("To https://github.com/Org/odoo_umbrella"));
+    }
+
+    [Fact]
+    public void Remote_rule_beats_the_rejected_summary()
+    {
+        const string stderr = """
+            remote: error: GH013: Repository rule violations found for refs/heads/chore/pin-gb_a-2222222-dev/19.0.
+            remote:
+            To https://github.com/Org/odoo_umbrella.git
+             ! [remote rejected] abcdef1 -> chore/pin-gb_a-2222222-dev/19.0 (push declined due to repository rule violations)
+            error: failed to push some refs to 'https://github.com/Org/odoo_umbrella.git'
+            """;
+
+        Assert.Equal(
+            "remote: error: GH013: Repository rule violations found for refs/heads/chore/pin-gb_a-2222222-dev/19.0.",
+            PinPublisher.PushReason("", stderr));
+        Assert.Equal(
+            "gb_a: Push abgelehnt",
+            PinPublisher.PushFailureText("gb_a", PinPublisher.PushReason("", ""), null));
+    }
+
+    [Fact]
     public async Task Moved_gitlink_is_not_pushed()
     {
         var calls = new List<IReadOnlyList<string>>();
@@ -191,16 +230,87 @@ public class PinPublisherTests
         }
         finally
         {
-            if (Directory.Exists(root))
-            {
-                foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
-                {
-                    File.SetAttributes(file, FileAttributes.Normal);
-                }
-
-                Directory.Delete(root, recursive: true);
-            }
+            DeleteRepo(root);
         }
+    }
+
+    [Fact]
+    public async Task Second_push_of_the_same_pin_reports_the_open_pull_request()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "umbrella-manager-pr-" + Guid.NewGuid().ToString("N"));
+        var bare = Path.Combine(root, "origin.git");
+        var work = Path.Combine(root, "umbrella");
+        var git = new GitWithFakeGh
+        {
+            Gh = args => args.Contains("list")
+                ? new ProcessResult(0, "[{\"number\":47}]", "")
+                : new ProcessResult(0, "https://example.invalid/pull/1", ""),
+        };
+        try
+        {
+            Directory.CreateDirectory(root);
+            await Git(git, root, "init", "--bare", bare);
+            await Git(git, root, "init", "-b", "dev/19.0", work);
+            await File.WriteAllTextAsync(Path.Combine(work, "README"), "x");
+            await Git(git, work, "add", "README");
+            await Git(git, work, "commit", "-m", "init");
+            const string oldSha = "1111111111111111111111111111111111111111";
+            const string newA = "2222222222222222222222222222222222222222";
+            await Git(git, work, "update-index", "--add", "--cacheinfo", "160000," + oldSha + ",gb_a");
+            await Git(git, work, "commit", "-m", "links");
+            await Git(git, work, "remote", "add", "origin", bare);
+            await Git(git, work, "push", "origin", "dev/19.0");
+            var loaded = (await Git(git, work, "rev-parse", "HEAD")).StandardOutput.Trim();
+            var change = new PinChange("gb_a", "gb_a", oldSha, newA, "19.0", "https://github.com/Org/gb_a.git");
+
+            var first = await new PinPublisher(git, work).PublishAsync(
+                "dev/19.0",
+                loaded,
+                [change],
+                LocalConfig.DefaultPinTitle,
+                CancellationToken.None);
+            Assert.True(first[0].Created);
+
+            await File.WriteAllTextAsync(Path.Combine(work, "README"), "y");
+            await Git(git, work, "add", "README");
+            await Git(git, work, "commit", "-m", "readme");
+            await Git(git, work, "push", "origin", "dev/19.0");
+            var before = (await Git(git, work, "status", "--porcelain")).StandardOutput;
+
+            var second = await new PinPublisher(git, work).PublishAsync(
+                "dev/19.0",
+                loaded,
+                [change],
+                LocalConfig.DefaultPinTitle,
+                CancellationToken.None);
+
+            Assert.False(second[0].Created);
+            Assert.Contains("Push abgelehnt (non-fast-forward)", second[0].Text);
+            Assert.Contains("PR 47 ist schon offen", second[0].Text);
+            Assert.DoesNotContain("To ", second[0].Text);
+            Assert.Equal(before, (await Git(git, work, "status", "--porcelain")).StandardOutput);
+            Assert.Contains(git.Calls, args => args.Contains("pr") && args.Contains("list") && args.Contains("dev/19.0"));
+            Assert.DoesNotContain(git.Calls, args => args.Contains("--force") || args.Contains("-f"));
+        }
+        finally
+        {
+            DeleteRepo(root);
+        }
+    }
+
+    private static void DeleteRepo(string root)
+    {
+        if (!Directory.Exists(root))
+        {
+            return;
+        }
+
+        foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        {
+            File.SetAttributes(file, FileAttributes.Normal);
+        }
+
+        Directory.Delete(root, recursive: true);
     }
 
     private static string RemoteHead(ProcessResult result)
@@ -243,6 +353,8 @@ sealed class GitWithFakeGh : IExternalProcess
 
     public List<IReadOnlyList<string>> Calls { get; } = [];
 
+    public Func<IReadOnlyList<string>, ProcessResult>? Gh { get; init; }
+
     public async Task<ProcessResult> RunAsync(
         string fileName,
         IReadOnlyList<string> arguments,
@@ -253,7 +365,9 @@ sealed class GitWithFakeGh : IExternalProcess
         Calls.Add(arguments);
         if (fileName == "gh")
         {
-            return new ProcessResult(0, "https://example.invalid/pull/" + Calls.Count(args => args.Contains("pr")), "");
+            return Gh is null
+                ? new ProcessResult(0, "https://example.invalid/pull/" + Calls.Count(args => args.Contains("pr")), "")
+                : Gh(arguments);
         }
 
         var env = environment is null
