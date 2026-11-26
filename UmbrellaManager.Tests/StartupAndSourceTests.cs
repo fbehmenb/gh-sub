@@ -61,6 +61,17 @@ public class StartupAndSourceTests
     }
 
     [Fact]
+    public void Unrelated_commits_are_not_reported_as_a_hidden_repo()
+    {
+        const string body = """
+            {"message":"No common ancestor between a and b.","status":"404"}
+            """;
+        var message = GitHub.GitHubText.Describe(body, "gh: No common ancestor between a and b. (HTTP 404)");
+        Assert.Equal(GitHub.GitHubText.Unrelated, message);
+        Assert.DoesNotContain("SSO", message);
+    }
+
+    [Fact]
     public async Task Missing_manifest_has_no_version_and_rate_limit_stays_visible()
     {
         var missing = new UmbrellaSource(
@@ -324,6 +335,86 @@ public class StartupAndSourceTests
         Assert.NotNull(controller.PrProposal);
         Assert.Contains(controller.PrProposal, line => line.Contains("gb_a", StringComparison.Ordinal) && line.Contains('→'));
         Assert.Contains(controller.PrProposal, line => line.Contains("production/19.0", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Production_graph_stays_when_pins_have_no_common_ancestor()
+    {
+        var production = new string('a', 40);
+        var staging = new string('b', 40);
+        var process = new ScriptedProcess((_, args) =>
+        {
+            var joined = string.Join(' ', args);
+            if (args.Contains("log"))
+            {
+                return new ProcessResult(0, $":160000 160000 {new string('0', 40)} {staging} A\tgb_a\n", "");
+            }
+
+            if (args.Contains("rev-parse") && joined.Contains(':'))
+            {
+                return new ProcessResult(0, staging + "\n", "");
+            }
+
+            if (args.Contains("rev-parse"))
+            {
+                return new ProcessResult(0, production + "\n", "");
+            }
+
+            if (args.Contains("ls-tree"))
+            {
+                return new ProcessResult(0, $"160000 commit {production}\tgb_a\n", "");
+            }
+
+            if (args.Contains("show"))
+            {
+                return new ProcessResult(0, """
+                    [submodule "gb_a"]
+                    	path = gb_a
+                    	url = https://github.com/Org/gb_a.git
+                    	branch = 19.0
+                    """, "");
+            }
+
+            if (joined.Contains("compare/"))
+            {
+                return new ProcessResult(
+                    1,
+                    "{\"message\":\"No common ancestor between a and b.\",\"status\":\"404\"}",
+                    "gh: No common ancestor between a and b. (HTTP 404)");
+            }
+
+            if (joined.Contains("commits"))
+            {
+                return new ProcessResult(0, "["
+                    + Commit(production, "production", "2026-10-01T00:00:00Z") + ","
+                    + Commit(staging, "staging", "2026-10-03T00:00:00Z")
+                    + "]", "");
+            }
+
+            if (joined.Contains("graphql"))
+            {
+                return new ProcessResult(0, Heads("19.0", production, "2026-10-01T00:00:00Z"), "");
+            }
+
+            return new ProcessResult(0, "", "");
+        });
+        var controller = new SessionController(
+            new UmbrellaSource(process, new ResponseCache(), "C:\\repo"),
+            ["production/19.0", "staging/19.0"],
+            "chore/pin-*");
+        await controller.LoadCurrentAsync();
+
+        Assert.DoesNotContain("SSO", controller.Message);
+        Assert.DoesNotContain("nicht sichtbar", controller.GraphMessage);
+        Assert.Contains(controller.Graph, row => row.Sha == production && row.Mark == PinMark.Production);
+        var staged = controller.Graph.Single(row => row.Sha == staging);
+        Assert.Equal(PinMark.Staging, staged.Mark);
+        Assert.False(staged.Promotable);
+
+        controller.Execute(AppCommand.FocusGraph);
+        controller.Execute(AppCommand.StagePin);
+        Assert.Contains("verzweigt", controller.Message);
+        Assert.Null(controller.StagedPin("gb_a"));
     }
 
     private static string Commit(string sha, string subject, string date)

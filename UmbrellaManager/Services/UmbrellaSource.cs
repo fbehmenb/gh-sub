@@ -191,7 +191,7 @@ public sealed class UmbrellaSource
             try
             {
                 var route = $"repos/{Escape(repo.Owner)}/{Escape(repo.Name)}/compare/{Escape(productionSha)}...{Escape(sha)}";
-                var status = GitHubParse.ParseCompareStatus(await ApiAsync(route, cancellationToken).ConfigureAwait(false));
+                var status = await CompareStatusAsync(route, cancellationToken).ConfigureAwait(false);
                 if (string.IsNullOrEmpty(status))
                 {
                     return;
@@ -696,7 +696,7 @@ public sealed class UmbrellaSource
     private async Task<bool> IsOnBranchAsync(GitHubRepo repo, string sha, string branch, CancellationToken cancellationToken)
     {
         var route = $"repos/{Escape(repo.Owner)}/{Escape(repo.Name)}/compare/{Escape(sha)}...{Escape(branch)}";
-        var status = GitHubParse.ParseCompareStatus(await ApiAsync(route, cancellationToken).ConfigureAwait(false));
+        var status = await CompareStatusAsync(route, cancellationToken).ConfigureAwait(false);
         return CompareStatus.PinIsOnBranch(status);
     }
 
@@ -711,6 +711,33 @@ public sealed class UmbrellaSource
     private Task<string> ApiAsync(string route, CancellationToken cancellationToken)
     {
         return GhAsync(route, ["api", route], cancellationToken);
+    }
+
+    private async Task<string?> CompareStatusAsync(string route, CancellationToken cancellationToken)
+    {
+        var result = await _process.RunAsync("gh", ["api", route], _path, cancellationToken).ConfigureAwait(false);
+        if (result.ExitCode == 0 && !string.IsNullOrWhiteSpace(result.StandardOutput))
+        {
+            _cache.Set(route, result.StandardOutput);
+            return GitHubParse.ParseCompareStatus(result.StandardOutput);
+        }
+
+        // GitHub antwortet mit HTTP 404, wenn die Commits keinen gemeinsamen Vorfahren haben.
+        if (GitHubText.IsUnrelatedHistory(result.StandardOutput, result.StandardError))
+        {
+            const string diverged = "{\"status\":\"diverged\"}";
+            _cache.Set(route, diverged);
+            return "diverged";
+        }
+
+        var message = GitHubText.Describe(result.StandardOutput, result.StandardError);
+        if (GitHubText.IsOffline(message) && _cache.TryGet(route, out var cached))
+        {
+            Offline = true;
+            return GitHubParse.ParseCompareStatus(cached);
+        }
+
+        throw new UserFacingException(message);
     }
 
     private async Task<string> GhAsync(string cacheKey, IReadOnlyList<string> arguments, CancellationToken cancellationToken)

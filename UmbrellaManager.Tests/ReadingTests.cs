@@ -37,6 +37,24 @@ public class ReadingTests
     }
 
     [Fact]
+    public void Long_messages_break_on_spaces_inside_the_column()
+    {
+        var lines = LineWrap.Split(
+            "GitHub meldet 404. Das Repo ist nicht sichtbar. Bei privaten Repos fehlt oft die SSO-Freigabe der Organisation.",
+            40);
+
+        Assert.Equal(
+            [
+                "GitHub meldet 404. Das Repo ist nicht",
+                "sichtbar. Bei privaten Repos fehlt oft",
+                "die SSO-Freigabe der Organisation.",
+            ],
+            lines);
+        Assert.All(lines, line => Assert.True(line.Length <= 40));
+        Assert.Empty(LineWrap.Split("", 20));
+    }
+
+    [Fact]
     public void Staging_history_keeps_gitlinks_and_only_ahead_pins_are_promotable()
     {
         var older = new string('c', 40);

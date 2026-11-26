@@ -9,11 +9,25 @@ public static partial class GitHubText
     public const string SsoDenied =
         "GitHub meldet 404. Das Repo ist nicht sichtbar. Bei privaten Repos fehlt oft die SSO-Freigabe der Organisation.";
 
+    public const string Unrelated =
+        "Die Commits haben keinen gemeinsamen Vorfahren.";
+
     public static bool IsOffline(string message) => message == Offline;
+
+    public static bool IsUnrelatedHistory(string stdout, string stderr)
+    {
+        var text = stdout + "\n" + stderr;
+        return text.Contains("No common ancestor", StringComparison.OrdinalIgnoreCase);
+    }
 
     public static string Describe(string stdout, string stderr)
     {
         var text = stdout + "\n" + stderr;
+        if (IsUnrelatedHistory(stdout, stderr))
+        {
+            return Unrelated;
+        }
+
         if (text.Contains("404", StringComparison.Ordinal))
         {
             return SsoDenied;

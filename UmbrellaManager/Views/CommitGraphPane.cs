@@ -26,9 +26,14 @@ public sealed class CommitGraphPane : View
         var y = DrawHeader();
         if (_controller.Graph.Count == 0)
         {
-            if (y < Viewport.Height)
+            foreach (var line in LineWrap.Split(_controller.GraphMessage, Viewport.Width))
             {
-                Painter.Line(this, y, _controller.GraphMessage, new Attribute(Painter.Muted, Painter.Paper));
+                if (y >= Viewport.Height)
+                {
+                    break;
+                }
+
+                Painter.Line(this, y, line, new Attribute(Painter.Muted, Painter.Paper));
                 y++;
             }
 
