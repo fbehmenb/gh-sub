@@ -34,6 +34,13 @@ public enum CommitTone
     LightGreen,
 }
 
+public enum PullState
+{
+    None,
+    Waiting,
+    Merged,
+}
+
 public enum PinMark
 {
     None,
@@ -54,7 +61,9 @@ public sealed record GraphRow(
     bool Promotable = false,
     IReadOnlyList<string>? Parents = null,
     IReadOnlyList<string>? Names = null,
-    IReadOnlyList<GraphCell>? Cells = null);
+    IReadOnlyList<GraphCell>? Cells = null,
+    PullState Pull = PullState.None,
+    string PullLabel = "");
 
 public sealed record GraphSnapshot(IReadOnlyList<string> Lanes, IReadOnlyList<GraphRow> Rows, string Message);
 

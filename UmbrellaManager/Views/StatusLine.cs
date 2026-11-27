@@ -51,6 +51,6 @@ public sealed class StatusLine : View
             { } row => row.Name,
             _ => "",
         };
-        return string.Join("  ·  ", new[] { module, _controller.Message, position }.Where(part => part.Length > 0));
+        return string.Join("  ·  ", new[] { _controller.OpenPullText, module, _controller.Message, position }.Where(part => part.Length > 0));
     }
 }

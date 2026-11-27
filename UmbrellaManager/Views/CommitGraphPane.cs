@@ -129,7 +129,17 @@ public sealed class CommitGraphPane : View
             text += "  " + badge;
         }
 
-        Painter.Put(this, x, line, text, new Attribute(body, background), Math.Max(0, Viewport.Width - x));
+        var label = commit.PullLabel;
+        var room = Math.Max(0, Viewport.Width - x);
+        var labelWidth = label.Length == 0 ? 0 : label.Length + 2;
+        var textRoom = Math.Max(0, room - labelWidth);
+        Painter.Put(this, x, line, text, new Attribute(body, background), textRoom);
+        if (label.Length > 0 && textRoom < room)
+        {
+            var used = Math.Min(text.Length, textRoom);
+            var color = commit.Pull == PullState.Waiting ? Painter.Waiting : Painter.Pin;
+            Painter.Put(this, x + used, line, "  " + label, new Attribute(color, background), room - used);
+        }
     }
 
     private static int StarLane(GraphRow commit)
@@ -207,24 +217,33 @@ public sealed class CommitGraphPane : View
         var staged = _controller.StagedPin(row.Path);
         if (staged is not null)
         {
-            return Module(row, "vorgemerkt", Painter.Pending, staged, branch);
+            return Module(row, "vorgemerkt", Painter.Pending, staged, branch, _controller.PullFor(staged), stagedAlso: true);
         }
 
         if (row.Sha is not null)
         {
-            return Module(row, "gepinnt", Painter.Pin, row.Sha, branch);
+            return Module(row, "gepinnt", Painter.Pin, row.Sha, branch, _controller.PullFor(row.Sha), stagedAlso: false);
         }
 
-        return Module(row, "kein Pin", Painter.Secondary, null, branch);
+        return Module(row, "kein Pin", Painter.Secondary, null, branch, (PullState.None, ""), stagedAlso: false);
     }
 
-    private static Head[] Module(VisibleRow row, string badge, Color color, string? sha, string branch)
+    private static Head[] Module(
+        VisibleRow row,
+        string badge,
+        Color color,
+        string? sha,
+        string branch,
+        (PullState State, string Label) pull,
+        bool stagedAlso)
     {
+        var label = pull.State == PullState.Waiting || stagedAlso ? pull.Label : "";
+        var pullColor = pull.State == PullState.Waiting ? Painter.Waiting : Painter.Pin;
         return
         [
             new Head(row.Name, Painter.Ink, null),
             new Head(badge, color, Join(branch, sha is null ? "" : Sha.Short(sha))),
-            new Head("", Painter.Ink, null),
+            new Head(label, label.Length == 0 ? Painter.Ink : pullColor, null),
         ];
     }
 

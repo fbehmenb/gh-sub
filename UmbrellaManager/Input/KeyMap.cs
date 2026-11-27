@@ -57,6 +57,7 @@ public static class KeyMap
         "u          Stand holen",
         "s          Einrichtung, Takt der Remote-Prüfung",
         "r          dieses Submodul neu laden",
+        "Hinweis     offene PRs unten, am Commit wartet in PR oder ist gemerged",
         "Umschalt+r  Tabs neu laden",
         "o          bei GitHub abmelden",
         "q          beenden",

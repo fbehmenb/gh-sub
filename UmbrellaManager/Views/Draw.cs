@@ -26,6 +26,8 @@ static class Painter
 
     public static readonly Color Pending = new(0xFF, 0x9E, 0x3D, 255);
 
+    public static readonly Color Waiting = new(0x5B, 0xC0, 0xEB, 255);
+
     public static readonly Color LightGreen = new(0x3D, 0xF2, 0x94, 255);
 
     public static readonly Color CommitSelected = new(0x2C, 0x4A, 0x9A, 255);

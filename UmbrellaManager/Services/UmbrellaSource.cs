@@ -161,6 +161,41 @@ public sealed class UmbrellaSource
         }
     }
 
+    public async Task<PullSnapshot?> ListPullsAsync(CancellationToken cancellationToken)
+    {
+        await _remote.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var open = await _process.RunAsync(
+                "gh",
+                ["pr", "list", "--state", "open", "--limit", PullPins.OpenLimit.ToString(), "--json", "number,state,baseRefName,body"],
+                _path,
+                cancellationToken).ConfigureAwait(false);
+            if (open.ExitCode != 0 || string.IsNullOrWhiteSpace(open.StandardOutput))
+            {
+                return null;
+            }
+
+            var merged = await _process.RunAsync(
+                "gh",
+                ["pr", "list", "--state", "merged", "--limit", PullPins.MergedLimit.ToString(), "--search", "Neuer Pin", "--json", "number,state,baseRefName,body"],
+                _path,
+                cancellationToken).ConfigureAwait(false);
+            var mergedJson = merged.ExitCode == 0 && !string.IsNullOrWhiteSpace(merged.StandardOutput)
+                ? merged.StandardOutput
+                : "[]";
+            return PullPins.Read(open.StandardOutput, mergedJson);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        finally
+        {
+            _remote.Release();
+        }
+    }
+
     public async Task<IReadOnlyDictionary<string, string>?> ListRemoteHeadsAsync(CancellationToken cancellationToken)
     {
         await _remote.WaitAsync(cancellationToken).ConfigureAwait(false);

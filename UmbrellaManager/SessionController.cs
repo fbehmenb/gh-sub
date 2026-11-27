@@ -57,6 +57,7 @@ public sealed class SessionController
     private readonly Dictionary<string, SubmoduleEntry> _modules = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, string>> _pending = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _tips = new(StringComparer.Ordinal);
+    private IReadOnlyList<PullPin> _pullPins = [];
     private readonly Dictionary<string, string> _compareStatus = new(StringComparer.OrdinalIgnoreCase);
     private readonly string _pinTitle;
     private string? _promotionNote;
@@ -123,6 +124,8 @@ public sealed class SessionController
     public string GraphMessage { get; private set; } = "";
 
     public string Message { get; private set; } = "keine vorgemerkten Änderungen";
+
+    public string OpenPullText { get; private set; } = "";
 
     public bool Loading { get; private set; }
 
@@ -514,6 +517,69 @@ public sealed class SessionController
         Raise();
     }
 
+    public (PullState State, string Label) PullFor(string? sha) => PullPins.Describe(sha, Branch, _pullPins);
+
+    public void NotePulls(PullSnapshot? snapshot)
+    {
+        if (!RememberPulls(snapshot))
+        {
+            return;
+        }
+
+        Raise();
+    }
+
+    private bool RememberPulls(PullSnapshot? snapshot)
+    {
+        if (snapshot is null)
+        {
+            return false;
+        }
+
+        OpenPullText = PullPins.CountText(snapshot.OpenCount, snapshot.Truncated);
+        _pullPins = snapshot.Pins;
+        if (Graph.Count > 0)
+        {
+            Graph = PullPins.Apply(Graph, Branch, _pullPins);
+        }
+
+        return true;
+    }
+
+    private IReadOnlyList<GraphRow> WithPulls(IReadOnlyList<GraphRow> rows) => PullPins.Apply(rows, Branch, _pullPins);
+
+    private async Task RefreshPullsAsync(CancellationToken token)
+    {
+        PullSnapshot? snapshot;
+        try
+        {
+            snapshot = await _source.ListPullsAsync(token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (UserFacingException)
+        {
+            return;
+        }
+
+        if (token.IsCancellationRequested)
+        {
+            return;
+        }
+
+        Post(() =>
+        {
+            if (token.IsCancellationRequested)
+            {
+                return;
+            }
+
+            NotePulls(snapshot);
+        });
+    }
+
     public void UseSetup(string filePath, int? seconds)
     {
         _setupFile = filePath;
@@ -600,6 +666,7 @@ public sealed class SessionController
         try
         {
             var remote = await _source.ListRemoteHeadsAsync(token).ConfigureAwait(false);
+            var pulls = await _source.ListPullsAsync(token).ConfigureAwait(false);
             if (token.IsCancellationRequested)
             {
                 return;
@@ -612,10 +679,14 @@ public sealed class SessionController
                     return;
                 }
 
+                RememberPulls(pulls);
                 NoteRemote(remote);
             });
         }
         catch (OperationCanceledException)
+        {
+        }
+        catch (UserFacingException)
         {
         }
     }
@@ -706,17 +777,17 @@ public sealed class SessionController
         await LoadBranchAsync(index, ++_epoch).ConfigureAwait(false);
     }
 
-    private Task ReloadModuleAsync()
+    private async Task ReloadModuleAsync()
     {
         if (Loading)
         {
-            return Task.CompletedTask;
+            return;
         }
 
         if (Selected is not { IsFolder: false } row || !_modules.ContainsKey(row.Path))
         {
             Say("Zuerst ein Submodul wählen.");
-            return Task.CompletedTask;
+            return;
         }
 
         if (_modules.TryGetValue(row.Path, out var module))
@@ -724,7 +795,12 @@ public sealed class SessionController
             _source.ClearModule(module);
         }
 
-        return LoadGraphForAsync(++_epoch, row.Path);
+        var epoch = ++_epoch;
+        await LoadGraphForAsync(epoch, row.Path).ConfigureAwait(false);
+        if (epoch == _epoch)
+        {
+            await RefreshPullsAsync(_cancel.Token).ConfigureAwait(false);
+        }
     }
 
     private Task ReloadAsync()
@@ -946,7 +1022,7 @@ public sealed class SessionController
                 }
 
                 Lanes = loaded.Snapshot.Lanes;
-                Graph = loaded.Snapshot.Rows;
+                Graph = WithPulls(loaded.Snapshot.Rows);
                 GraphIndex = PinRow(loaded.Snapshot.Rows, module.Sha);
                 GraphMessage = loaded.Snapshot.Message;
                 RememberPromotion(loaded.Promotion);
@@ -969,6 +1045,10 @@ public sealed class SessionController
         finally
         {
             await PublishDisplayedAsync(displayedTask, epoch).ConfigureAwait(false);
+            if (epoch == _epoch)
+            {
+                await RefreshPullsAsync(token).ConfigureAwait(false);
+            }
         }
     }
 
@@ -1068,7 +1148,7 @@ public sealed class SessionController
                 }
 
                 Lanes = loaded.Snapshot.Lanes;
-                Graph = loaded.Snapshot.Rows;
+                Graph = WithPulls(loaded.Snapshot.Rows);
                 GraphIndex = PinRow(loaded.Snapshot.Rows, module.Sha);
                 GraphMessage = loaded.Snapshot.Message;
                 RememberPromotion(loaded.Promotion);
@@ -1265,6 +1345,15 @@ public sealed class SessionController
                     NotePush(tick);
                 })).ConfigureAwait(false);
             var currentTip = await _source.ReadTipAsync(branch, token).ConfigureAwait(false);
+            PullSnapshot? pulls = null;
+            try
+            {
+                pulls = await _source.ListPullsAsync(token).ConfigureAwait(false);
+            }
+            catch (UserFacingException)
+            {
+            }
+
             if (epoch != _epoch)
             {
                 Post(() => { _publishing = false; });
@@ -1289,7 +1378,7 @@ public sealed class SessionController
                 if (Selected is { IsFolder: false } row && _modules.TryGetValue(row.Path, out var module))
                 {
                     var pending = PendingSha(branch, row.Path);
-                    Graph = Graph.Select(commit => commit with { Tone = GraphBuilder.Tone(commit.Sha, module.Sha, pending) }).ToList();
+                    Graph = WithPulls(Graph.Select(commit => commit with { Tone = GraphBuilder.Tone(commit.Sha, module.Sha, pending) }).ToList());
                 }
 
                 if (currentTip is not null
@@ -1299,6 +1388,7 @@ public sealed class SessionController
                     _stale.Add(branch);
                 }
 
+                RememberPulls(pulls);
                 _publishing = false;
                 _conflict = results.Any(result => result.Conflict);
                 var created = results.Where(result => result.Created).ToList();
@@ -1687,7 +1777,7 @@ public sealed class SessionController
         }
 
         var pending = map.TryGetValue(row.Path, out var staged) ? staged : null;
-        Graph = Graph.Select(commit => commit with { Tone = GraphBuilder.Tone(commit.Sha, module.Sha, pending) }).ToList();
+        Graph = WithPulls(Graph.Select(commit => commit with { Tone = GraphBuilder.Tone(commit.Sha, module.Sha, pending) }).ToList());
         Say(Status(Branch));
     }
 
