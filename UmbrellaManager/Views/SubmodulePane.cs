@@ -60,37 +60,54 @@ public sealed class SubmodulePane : View
             }
 
             var item = rows[index];
-            var selected = index == _controller.TreeIndex;
-            Painter.Line(this, row + 2, Line(item, columns), AttributeFor(selected, HasFocus));
+            DrawRow(row + 2, item, columns, index == _controller.TreeIndex);
         }
 
         return true;
     }
 
-    private string Line(VisibleRow row, (int Name, int Pin, int Branch) columns)
+    private void DrawRow(int y, VisibleRow row, (int Name, int Pin, int Branch) columns, bool selected)
     {
+        var paper = Paper(selected, HasFocus);
+        var ink = selected && !HasFocus ? Painter.Secondary : Painter.Ink;
         var prefix = row.IsFolder ? (row.Expanded ? "v " : "> ") : "  ";
         var name = new string(' ', row.Depth * 2) + prefix + row.Name;
         var pin = row.Sha is null ? "" : Sha.Short(row.Sha);
         var branch = _controller.DisplayedBranch(row);
+        var tone = BranchTone.Plain;
         if (_controller.IsProduction && row.Sha is not null && _controller.PinMarks.TryGetValue(row.Path, out var mark))
         {
+            tone = mark == "✗" ? BranchTone.Behind : mark == "✓" ? BranchTone.Match : BranchTone.Plain;
             branch = branch.Length == 0 ? mark : branch + " " + mark;
         }
 
-        return Fit(name, columns.Name) + Fit(pin, columns.Pin) + Fit(branch, columns.Branch);
+        var branchInk = tone switch
+        {
+            BranchTone.Behind => Painter.Danger,
+            BranchTone.Match => Painter.Pin,
+            _ => ink,
+        };
+        Painter.Line(this, y, "", new Attribute(ink, paper));
+        Painter.Put(this, 0, y, Fit(name, columns.Name), new Attribute(ink, paper), columns.Name);
+        Painter.Put(this, columns.Name, y, Fit(pin, columns.Pin), new Attribute(ink, paper), columns.Pin);
+        Painter.Put(this, columns.Name + columns.Pin, y, Fit(branch, columns.Branch), new Attribute(branchInk, paper), columns.Branch);
     }
 
-    private static Attribute AttributeFor(bool selected, bool focused)
+    private static Color Paper(bool selected, bool focused)
     {
         if (!selected)
         {
-            return new Attribute(Painter.Ink, Painter.Paper);
+            return Painter.Paper;
         }
 
-        return focused
-            ? new Attribute(Painter.Ink, Painter.Selected)
-            : new Attribute(Painter.Secondary, Painter.SelectedQuiet);
+        return focused ? Painter.Selected : Painter.SelectedQuiet;
+    }
+
+    private enum BranchTone
+    {
+        Plain,
+        Match,
+        Behind,
     }
 
     private static (int Name, int Pin, int Branch) Columns(int width)

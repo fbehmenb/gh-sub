@@ -591,6 +591,7 @@ public sealed class UmbrellaSource
     }
 
     public async Task<IReadOnlyDictionary<string, string>> LoadDisplayedBranchesAsync(
+        string tab,
         IReadOnlyList<SubmoduleEntry> modules,
         CancellationToken cancellationToken)
     {
@@ -601,7 +602,7 @@ public sealed class UmbrellaSource
             await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                var branch = await DisplayedBranchAsync(module, cancellationToken).ConfigureAwait(false);
+                var branch = await DisplayedBranchAsync(tab, module, cancellationToken).ConfigureAwait(false);
                 if (string.IsNullOrEmpty(branch))
                 {
                     return;
@@ -621,7 +622,7 @@ public sealed class UmbrellaSource
         return shown;
     }
 
-    private async Task<string?> DisplayedBranchAsync(SubmoduleEntry module, CancellationToken cancellationToken)
+    private async Task<string?> DisplayedBranchAsync(string tab, SubmoduleEntry module, CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(module.Sha))
         {
@@ -637,7 +638,7 @@ public sealed class UmbrellaSource
         try
         {
             var tips = await BranchesAsync(repo, cancellationToken).ConfigureAwait(false);
-            return PinBranch.FromTips(module.Branch, module.Sha, tips);
+            return PinBranch.FromTips(module.Branch, module.Sha, tips, BranchOrder.Series(tab));
         }
         catch (OperationCanceledException)
         {
@@ -651,6 +652,7 @@ public sealed class UmbrellaSource
     }
 
     public async Task<IReadOnlyDictionary<string, string>> LoadPinMarksAsync(
+        string tab,
         IReadOnlyList<SubmoduleEntry> modules,
         CancellationToken cancellationToken)
     {
@@ -661,7 +663,7 @@ public sealed class UmbrellaSource
             await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                var mark = await MarkAsync(module, cancellationToken).ConfigureAwait(false);
+                var mark = await MarkAsync(tab, module, cancellationToken).ConfigureAwait(false);
                 lock (marks)
                 {
                     marks[module.Path] = mark;
@@ -676,7 +678,7 @@ public sealed class UmbrellaSource
         return marks;
     }
 
-    private async Task<string> MarkAsync(SubmoduleEntry module, CancellationToken cancellationToken)
+    private async Task<string> MarkAsync(string tab, SubmoduleEntry module, CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(module.Sha))
         {
@@ -691,7 +693,9 @@ public sealed class UmbrellaSource
 
         try
         {
-            var branch = module.Branch;
+            // Der Haken gilt der Version des Umbrella-Tabs. branch= in .gitmodules bleibt oft auf 19.0 stehen.
+            var series = BranchOrder.Series(tab);
+            var branch = series ?? module.Branch;
             if (string.IsNullOrEmpty(branch))
             {
                 branch = await DefaultBranchAsync(repo, cancellationToken).ConfigureAwait(false);
@@ -703,6 +707,11 @@ public sealed class UmbrellaSource
             }
 
             var onBranch = await IsOnBranchAsync(repo, module.Sha, branch, cancellationToken).ConfigureAwait(false);
+            if (series is not null)
+            {
+                return onBranch ? "✓" : "✗";
+            }
+
             return onBranch ? "✓" : "nicht " + branch;
         }
         catch (UserFacingException ex) when (GitHubText.IsOffline(ex.Message))

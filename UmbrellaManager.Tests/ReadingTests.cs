@@ -34,6 +34,9 @@ public class ReadingTests
         Assert.Equal("staging/19.0", BranchOrder.StagingPartner("production/19.0"));
         Assert.Null(BranchOrder.StagingPartner("dev/19.0"));
         Assert.Null(BranchOrder.StagingPartner("production/"));
+        Assert.Equal("20.0", BranchOrder.Series("production/20.0"));
+        Assert.Equal("19.0", BranchOrder.Series("staging/19.0"));
+        Assert.Null(BranchOrder.Series("production/"));
     }
 
     [Fact]
@@ -166,6 +169,12 @@ public class ReadingTests
         var same = GraphBuilder.MarkPromotion(rows, Pin, Pin, new HashSet<string>(StringComparer.OrdinalIgnoreCase) { Pin });
         Assert.Equal(PinMark.Both, same.Single(row => row.Sha == Pin).Mark);
         Assert.False(same.Single(row => row.Sha == Pin).Promotable);
+
+        var shown = GraphBuilder.ProductionTones(marked);
+        Assert.Equal(CommitTone.Gray, shown.Single(row => row.Sha == Pin).Tone);
+        Assert.Equal(CommitTone.LightGreen, shown.Single(row => row.Sha == Other).Tone);
+        Assert.Equal(CommitTone.Gray, shown.Single(row => row.Sha == Feature).Tone);
+        Assert.Equal(CommitTone.DarkGreen, GraphBuilder.ProductionTones(same).Single(row => row.Sha == Pin).Tone);
     }
 
     [Fact]
@@ -256,17 +265,18 @@ public class ReadingTests
             new BranchTip("19.0", Other, day, false),
             new BranchTip("20.0", Pin, day.AddDays(1), false),
         };
-        var rows = GraphBuilder.Build("19.0", [older], [("20.0", [pin])], Pin, null);
+        var rows = GraphBuilder.Build("19.0", [older], [("20.0", [pin, older])], Pin, null);
 
-        Assert.Equal("20.0", PinBranch.FromGraph(rows, Pin, "19.0"));
-        Assert.Equal("20.0", PinBranch.FromTips("19.0", Pin, tips));
+        Assert.Equal("20.0", PinBranch.FromGraph(["19.0", "20.0"], rows, Pin, "20.0"));
+        Assert.Equal("20.0", PinBranch.FromGraph(["19.0", "20.0"], rows, Other, "20.0"));
+        Assert.Equal("20.0", PinBranch.FromTips("19.0", Pin, tips, "20.0"));
         Assert.Equal("19.0", PinBranch.FromTips("19.0", Other, tips));
-        Assert.Equal("19.0", PinBranch.FromTips("19.0", Feature, tips));
-        Assert.Equal("19.0, 20.0", PinBranch.FromTips("19.0", Pin,
+        Assert.Null(PinBranch.FromTips("19.0", Feature, tips));
+        Assert.Equal("20.0", PinBranch.FromTips("19.0", Pin,
         [
             new BranchTip("20.0", Pin, day, false),
             new BranchTip("19.0", Pin, day, false),
-        ]));
+        ], "20.0"));
     }
 
     [Fact]

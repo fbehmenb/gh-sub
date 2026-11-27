@@ -4,7 +4,7 @@ using UmbrellaManager.Model;
 
 public static class PinBranch
 {
-    public static string? FromTips(string? configured, string? pinSha, IReadOnlyList<BranchTip> tips)
+    public static string? FromTips(string? configured, string? pinSha, IReadOnlyList<BranchTip> tips, string? prefer = null)
     {
         if (string.IsNullOrEmpty(pinSha))
         {
@@ -14,7 +14,7 @@ public static class PinBranch
         var heads = new List<string>();
         foreach (var tip in tips)
         {
-            if (!Sha.Same(tip.TipSha, pinSha) || heads.Contains(tip.Name, StringComparer.Ordinal))
+            if (tip.TipSha.Length == 0 || !Sha.Same(tip.TipSha, pinSha) || heads.Contains(tip.Name, StringComparer.Ordinal))
             {
                 continue;
             }
@@ -22,52 +22,53 @@ public static class PinBranch
             heads.Add(tip.Name);
         }
 
-        // branch= aus .gitmodules kann hinter dem Pin zurückliegen.
-        // Die Spalte nennt dann die Branch-Spitze, die der Pin wirklich ist.
-        return JoinHeads(configured, heads);
+        // Kein Treffer bleibt leer. branch= aus .gitmodules ist dann nicht der Branch des Pins.
+        return Choose(heads, prefer);
     }
 
-    public static string? FromGraph(IReadOnlyList<GraphRow> rows, string? pinSha, string? configured)
+    public static string? FromGraph(IReadOnlyList<string> lanes, IReadOnlyList<GraphRow> rows, string? pinSha, string? prefer)
     {
         foreach (var row in rows)
         {
-            if (!Sha.Same(row.Sha, pinSha) || row.Names is not { Count: > 0 } names)
+            if (!Sha.Same(row.Sha, pinSha))
             {
                 continue;
             }
 
-            return JoinHeads(configured, names);
+            var heads = new List<string>();
+            for (var index = 0; index < row.Dots.Length && index < lanes.Count; index++)
+            {
+                if (row.Dots[index] && !heads.Contains(lanes[index], StringComparer.Ordinal))
+                {
+                    heads.Add(lanes[index]);
+                }
+            }
+
+            return Choose(heads, prefer);
         }
 
         return null;
     }
 
-    private static string? JoinHeads(string? configured, IReadOnlyList<string> heads)
+    private static string? Choose(IReadOnlyList<string> heads, string? prefer)
     {
         if (heads.Count == 0)
         {
-            return configured;
+            return null;
         }
 
-        if (string.IsNullOrEmpty(configured) || !heads.Contains(configured, StringComparer.Ordinal))
+        if (!string.IsNullOrEmpty(prefer))
         {
-            return string.Join(", ", heads);
-        }
-
-        if (heads.Count == 1)
-        {
-            return configured;
-        }
-
-        var ordered = new List<string> { configured };
-        foreach (var name in heads)
-        {
-            if (!name.Equals(configured, StringComparison.Ordinal))
+            foreach (var name in heads)
             {
-                ordered.Add(name);
+                if (name.Equals(prefer, StringComparison.Ordinal)
+                    || name.EndsWith("/" + prefer, StringComparison.Ordinal))
+                {
+                    return name;
+                }
             }
         }
 
-        return string.Join(", ", ordered);
+        return string.Join(", ", heads);
     }
 }

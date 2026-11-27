@@ -86,6 +86,31 @@ public static partial class BranchOrder
         return branch?.StartsWith("production/", StringComparison.Ordinal) == true;
     }
 
+    public static string? Series(string? branch)
+    {
+        if (string.IsNullOrEmpty(branch))
+        {
+            return null;
+        }
+
+        var slash = branch.LastIndexOf('/');
+        var suffix = slash < 0 ? branch : branch[(slash + 1)..];
+        var dot = suffix.IndexOf('.');
+        if (dot <= 0 || dot == suffix.Length - 1)
+        {
+            return null;
+        }
+
+        var major = suffix[..dot];
+        var minor = suffix[(dot + 1)..];
+        if (major.All(char.IsAsciiDigit) && minor.All(char.IsAsciiDigit))
+        {
+            return suffix;
+        }
+
+        return null;
+    }
+
     public static string? StagingPartner(string? branch)
     {
         const string prefix = "production/";

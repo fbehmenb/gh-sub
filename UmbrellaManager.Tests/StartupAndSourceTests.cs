@@ -310,19 +310,18 @@ public class StartupAndSourceTests
         Assert.Equal(staging, controller.StagedPin("gb_a"));
         Assert.Equal(staging, controller.Graph[controller.GraphIndex].Sha);
         Assert.Contains(controller.Graph, row => row.Sha == staging && row.Tone == CommitTone.LightGreen);
+        Assert.Contains(controller.Graph, row => row.Sha == production && row.Tone == CommitTone.Gray);
 
+        var locked = controller.GraphIndex;
         controller.Execute(AppCommand.MoveUp);
-        controller.Execute(AppCommand.StagePin);
+        controller.Execute(AppCommand.MoveDown);
+        Assert.Equal(locked, controller.GraphIndex);
         Assert.Equal(staging, controller.StagedPin("gb_a"));
-        Assert.Equal(staging, controller.Graph[controller.GraphIndex].Sha);
 
         controller.Execute(AppCommand.StagePin);
         Assert.Null(controller.StagedPin("gb_a"));
-
-        controller.Execute(AppCommand.MoveDown);
         controller.Execute(AppCommand.StagePin);
         Assert.Equal(staging, controller.StagedPin("gb_a"));
-        Assert.NotEqual(older, controller.StagedPin("gb_a"));
 
         controller.Execute(AppCommand.ChooseNewer);
         Assert.Contains("schon auf Staging", controller.Message);
@@ -1165,6 +1164,35 @@ public class StartupAndSourceTests
             return new ProcessResult(0, "", "");
         });
         return new SessionController(new UmbrellaSource(process, new ResponseCache(), "C:\\repo"), ["dev/19.0"], "chore/pin-*");
+    }
+
+    [Fact]
+    public async Task Production_20_marks_a_19_pin_with_a_cross_and_a_20_pin_with_a_check()
+    {
+        const string pin = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        var process = new ScriptedProcess((_, args) =>
+        {
+            var joined = string.Join(' ', args);
+            if (joined.Contains("compare/") && joined.Contains("...20.0"))
+            {
+                var behind = joined.Contains("gb_old");
+                return new ProcessResult(0, behind ? "{\"status\":\"diverged\"}" : "{\"status\":\"identical\"}", "");
+            }
+
+            return new ProcessResult(1, "", joined);
+        });
+        var source = new UmbrellaSource(process, new ResponseCache(), "C:\\repo");
+        var modules = new[]
+        {
+            new SubmoduleEntry("gb_old", pin, "https://github.com/Org/gb_old", "19.0"),
+            new SubmoduleEntry("gb_new", pin, "https://github.com/Org/gb_new", "19.0"),
+        };
+
+        var marks = await source.LoadPinMarksAsync("production/20.0", modules, CancellationToken.None);
+
+        Assert.Equal("✗", marks["gb_old"]);
+        Assert.Equal("✓", marks["gb_new"]);
+        Assert.DoesNotContain(marks.Values, mark => mark.Contains("nicht 19.0", StringComparison.Ordinal));
     }
 
     private static string Modules(string path)

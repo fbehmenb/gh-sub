@@ -160,6 +160,16 @@ public static class GraphBuilder
         }).ToList();
     }
 
+    public static IReadOnlyList<GraphRow> ProductionTones(IReadOnlyList<GraphRow> rows)
+    {
+        return rows.Select(row => row.Mark switch
+        {
+            PinMark.Both => row with { Tone = CommitTone.DarkGreen },
+            PinMark.Staging => row with { Tone = CommitTone.LightGreen },
+            _ => row with { Tone = CommitTone.Gray },
+        }).ToList();
+    }
+
     public static string Stamp(CommitTone tone)
     {
         return tone switch

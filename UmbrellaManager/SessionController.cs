@@ -62,7 +62,9 @@ public sealed class SessionController
     private readonly string _pinTitle;
     private string? _promotionNote;
     private CancellationTokenSource _cancel = new();
+    private CancellationTokenSource _branchCancel = new();
     private int _epoch;
+    private int _branchEpoch;
     private bool _confirming;
     private bool _publishing;
     private bool _resultVisible;
@@ -248,7 +250,24 @@ public sealed class SessionController
             return shown;
         }
 
-        return row.Branch ?? "";
+        if (IsProduction && row.Sha is not null && PinMarks.TryGetValue(row.Path, out var mark))
+        {
+            if (mark == "✓")
+            {
+                var series = BranchOrder.Series(Branch);
+                if (!string.IsNullOrEmpty(series))
+                {
+                    return series;
+                }
+            }
+
+            if (mark == "✗")
+            {
+                return row.Branch ?? "";
+            }
+        }
+
+        return "";
     }
 
     public IReadOnlyList<VisibleRow> Rows => SubmoduleTree.Flatten(Roots, _collapsed);
@@ -473,6 +492,7 @@ public sealed class SessionController
     public void Cancel()
     {
         _cancel.Cancel();
+        _branchCancel.Cancel();
         _pollCancel?.Cancel();
     }
 
@@ -922,7 +942,11 @@ public sealed class SessionController
             Raise();
         });
         var token = Restart();
+        var branchToken = RestartBranch();
+        var branchEpoch = ++_branchEpoch;
         Task<IReadOnlyDictionary<string, string>>? displayedTask = null;
+        string? pinBranch = null;
+        string? pinPath = null;
         try
         {
             var branch = Branches[index];
@@ -932,7 +956,7 @@ public sealed class SessionController
                 return;
             }
 
-            displayedTask = _source.LoadDisplayedBranchesAsync(Collect(roots), token);
+            displayedTask = _source.LoadDisplayedBranchesAsync(branch, Collect(roots), branchToken);
             var rows = SubmoduleTree.Flatten(roots, new HashSet<string>(StringComparer.Ordinal));
             var treeIndex = PreferredRow(rows, keepPath);
             var selected = treeIndex >= 0 && treeIndex < rows.Count ? rows[treeIndex] : (VisibleRow?)null;
@@ -967,7 +991,7 @@ public sealed class SessionController
 
             if (BranchOrder.IsProduction(branch))
             {
-                var marks = await _source.LoadPinMarksAsync(Collect(roots), token).ConfigureAwait(false);
+                var marks = await _source.LoadPinMarksAsync(branch, Collect(roots), branchToken).ConfigureAwait(false);
                 if (epoch != _epoch)
                 {
                     return;
@@ -1013,7 +1037,8 @@ public sealed class SessionController
                 return;
             }
 
-            var pinBranch = PinBranch.FromGraph(loaded.Snapshot.Rows, module.Sha, module.Branch);
+            pinBranch = PinBranch.FromGraph(loaded.Snapshot.Lanes, loaded.Snapshot.Rows, module.Sha, BranchOrder.Series(branch));
+            pinPath = module.Path;
             Post(() =>
             {
                 if (epoch != _epoch)
@@ -1023,7 +1048,7 @@ public sealed class SessionController
 
                 Lanes = loaded.Snapshot.Lanes;
                 Graph = WithPulls(loaded.Snapshot.Rows);
-                GraphIndex = PinRow(loaded.Snapshot.Rows, module.Sha);
+                GraphIndex = ChoiceRow(loaded.Snapshot.Rows, module.Sha, BranchOrder.IsProduction(branch));
                 GraphMessage = loaded.Snapshot.Message;
                 RememberPromotion(loaded.Promotion);
                 if (!string.IsNullOrEmpty(pinBranch))
@@ -1044,7 +1069,25 @@ public sealed class SessionController
         }
         finally
         {
-            await PublishDisplayedAsync(displayedTask, epoch).ConfigureAwait(false);
+            await PublishDisplayedAsync(displayedTask, branchEpoch).ConfigureAwait(false);
+            if (branchEpoch == _branchEpoch && !string.IsNullOrEmpty(pinBranch) && pinPath is not null)
+            {
+                var update = pinBranch;
+                var path = pinPath;
+                Post(() =>
+                {
+                    if (branchEpoch != _branchEpoch)
+                    {
+                        return;
+                    }
+
+                    if (RememberDisplayed(new Dictionary<string, string>(StringComparer.Ordinal) { [path] = update }))
+                    {
+                        Raise();
+                    }
+                });
+            }
+
             if (epoch == _epoch)
             {
                 await RefreshPullsAsync(token).ConfigureAwait(false);
@@ -1061,7 +1104,7 @@ public sealed class SessionController
                 return;
             }
 
-            GraphIndex = Math.Clamp(GraphIndex + delta, 0, Graph.Count - 1);
+            GraphIndex = IsProduction ? NextChoice(GraphIndex, delta) : Math.Clamp(GraphIndex + delta, 0, Graph.Count - 1);
             Raise();
             return;
         }
@@ -1139,7 +1182,7 @@ public sealed class SessionController
                 return;
             }
 
-            var pinBranch = PinBranch.FromGraph(loaded.Snapshot.Rows, module.Sha, module.Branch);
+            var pinBranch = PinBranch.FromGraph(loaded.Snapshot.Lanes, loaded.Snapshot.Rows, module.Sha, BranchOrder.Series(branchName));
             Post(() =>
             {
                 if (epoch != _epoch)
@@ -1149,7 +1192,7 @@ public sealed class SessionController
 
                 Lanes = loaded.Snapshot.Lanes;
                 Graph = WithPulls(loaded.Snapshot.Rows);
-                GraphIndex = PinRow(loaded.Snapshot.Rows, module.Sha);
+                GraphIndex = ChoiceRow(loaded.Snapshot.Rows, module.Sha, BranchOrder.IsProduction(branchName));
                 GraphMessage = loaded.Snapshot.Message;
                 RememberPromotion(loaded.Promotion);
                 if (!string.IsNullOrEmpty(pinBranch))
@@ -1378,7 +1421,7 @@ public sealed class SessionController
                 if (Selected is { IsFolder: false } row && _modules.TryGetValue(row.Path, out var module))
                 {
                     var pending = PendingSha(branch, row.Path);
-                    Graph = WithPulls(Graph.Select(commit => commit with { Tone = GraphBuilder.Tone(commit.Sha, module.Sha, pending) }).ToList());
+                    Graph = WithPulls(Restyle(Graph, module.Sha, pending));
                 }
 
                 if (currentTip is not null
@@ -1548,6 +1591,7 @@ public sealed class SessionController
         }
 
         rows = GraphBuilder.MarkPromotion(rows, module.Sha, stagingTip, promotable);
+        rows = GraphBuilder.ProductionTones(rows);
         return new LoadedGraph(snapshot with { Rows = rows }, new PromotionState(note, compared));
     }
 
@@ -1755,13 +1799,27 @@ public sealed class SessionController
 
     private bool IsNewerOnSameBranch(GraphRow chosen, string? pinSha)
     {
-        if (chosen.Dots.Length == 0 || !chosen.Dots[0] || Sha.Same(chosen.Sha, pinSha))
+        if (Sha.Same(chosen.Sha, pinSha))
         {
             return false;
         }
 
         var pin = Graph.FirstOrDefault(commit => Sha.Same(commit.Sha, pinSha));
-        return pin is null || chosen.Date > pin.Date;
+        return pin is not null && chosen.Date > pin.Date && SharesLane(chosen, pin);
+    }
+
+    private static bool SharesLane(GraphRow left, GraphRow right)
+    {
+        var count = Math.Min(left.Dots.Length, right.Dots.Length);
+        for (var index = 0; index < count; index++)
+        {
+            if (left.Dots[index] && right.Dots[index])
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void ApplyPin(string? sha, VisibleRow row, SubmoduleEntry module)
@@ -1777,7 +1835,7 @@ public sealed class SessionController
         }
 
         var pending = map.TryGetValue(row.Path, out var staged) ? staged : null;
-        Graph = WithPulls(Graph.Select(commit => commit with { Tone = GraphBuilder.Tone(commit.Sha, module.Sha, pending) }).ToList());
+        Graph = WithPulls(Restyle(Graph, module.Sha, pending));
         Say(Status(Branch));
     }
 
@@ -2145,7 +2203,7 @@ public sealed class SessionController
         });
     }
 
-    private async Task PublishDisplayedAsync(Task<IReadOnlyDictionary<string, string>>? displayedTask, int epoch)
+    private async Task PublishDisplayedAsync(Task<IReadOnlyDictionary<string, string>>? displayedTask, int branchEpoch)
     {
         if (displayedTask is null)
         {
@@ -2155,14 +2213,14 @@ public sealed class SessionController
         try
         {
             var displayed = await displayedTask.ConfigureAwait(false);
-            if (epoch != _epoch)
+            if (branchEpoch != _branchEpoch)
             {
                 return;
             }
 
             Post(() =>
             {
-                if (epoch != _epoch)
+                if (branchEpoch != _branchEpoch)
                 {
                     return;
                 }
@@ -2247,6 +2305,13 @@ public sealed class SessionController
         return _cancel.Token;
     }
 
+    private CancellationToken RestartBranch()
+    {
+        _branchCancel.Cancel();
+        _branchCancel = new CancellationTokenSource();
+        return _branchCancel.Token;
+    }
+
     private static List<SubmoduleEntry> Collect(IEnumerable<TreeNode> nodes)
     {
         var modules = new List<SubmoduleEntry>();
@@ -2307,6 +2372,46 @@ public sealed class SessionController
         }
 
         return 0;
+    }
+
+    private IReadOnlyList<GraphRow> Restyle(IReadOnlyList<GraphRow> rows, string? pinSha, string? pending)
+    {
+        var toned = rows.Select(commit => commit with { Tone = GraphBuilder.Tone(commit.Sha, pinSha, pending) }).ToList();
+        return IsProduction ? GraphBuilder.ProductionTones(toned) : toned;
+    }
+
+    private int NextChoice(int start, int delta)
+    {
+        if (delta == 0)
+        {
+            return start;
+        }
+
+        for (var index = start + delta; index >= 0 && index < Graph.Count; index += delta)
+        {
+            if (Graph[index].Mark is PinMark.Staging or PinMark.Both)
+            {
+                return index;
+            }
+        }
+
+        return start;
+    }
+
+    private static int ChoiceRow(IReadOnlyList<GraphRow> rows, string? pinSha, bool production)
+    {
+        if (production)
+        {
+            for (var index = 0; index < rows.Count; index++)
+            {
+                if (rows[index].Mark is PinMark.Staging or PinMark.Both)
+                {
+                    return index;
+                }
+            }
+        }
+
+        return PinRow(rows, pinSha);
     }
 
     private static int PinRow(IReadOnlyList<GraphRow> rows, string? sha)

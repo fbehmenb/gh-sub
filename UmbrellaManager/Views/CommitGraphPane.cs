@@ -86,7 +86,8 @@ public sealed class CommitGraphPane : View
         {
             if (glyph.Symbol != ' ')
             {
-                Painter.Put(this, x, line, glyph.Symbol.ToString(), new Attribute(Painter.Lane(glyph.Lane), Painter.Paper), 1);
+                var link = _controller.IsProduction ? Painter.Muted : Painter.Lane(glyph.Lane);
+                Painter.Put(this, x, line, glyph.Symbol.ToString(), new Attribute(link, Painter.Paper), 1);
             }
 
             x++;
@@ -107,7 +108,7 @@ public sealed class CommitGraphPane : View
             {
                 if (glyph.Symbol != ' ')
                 {
-                    var color = selected ? Painter.Ink : Painter.Lane(glyph.Lane);
+                    var color = selected ? Painter.Ink : MutedCommit(commit) ? Painter.Muted : Painter.Lane(glyph.Lane);
                     Painter.Put(this, x, line, glyph.Symbol.ToString(), new Attribute(color, background), 1);
                 }
 
@@ -160,14 +161,24 @@ public sealed class CommitGraphPane : View
         return 0;
     }
 
-    private static Color MessageColor(GraphRow commit, bool selected)
+    private Color MessageColor(GraphRow commit, bool selected)
     {
+        if (MutedCommit(commit))
+        {
+            return Painter.Muted;
+        }
+
         return commit.Tone switch
         {
             CommitTone.DarkGreen => Painter.Pin,
             CommitTone.LightGreen => Painter.Pending,
             _ => selected ? Painter.Ink : Painter.Lane(StarLane(commit)),
         };
+    }
+
+    private bool MutedCommit(GraphRow commit)
+    {
+        return _controller.IsProduction && commit.Tone == CommitTone.Gray;
     }
 
     private int DrawHeader()
